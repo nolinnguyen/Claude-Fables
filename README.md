@@ -125,6 +125,15 @@ tool calls, Claude's own words ──► activity log (last 14 lines)
 
 Every scene is one small model request, so this costs a few requests per minute while Claude is working.
 
+## All your agents on one stage
+
+When more than one Claude Code session runs on the machine, the band in the main pane plays one combined story: one critter per session, each in its own color with its name tag (yellow waits on you, red failed, green done), the agent the scene is about speaking in the full bubble and the others in short lines. Critters walk over to each other when their work touches, and one left idle dozes off.
+
+- Every session writes a small status file to `C:/dev/.cache/fables-tower` every 5 seconds: its title, what it was asked for, its status and its last few actions.
+- One session at a time holds the narrator lease (`narrator.lease`) and writes the story (`story.ensemble`), at most every 8 seconds and only when some agent's news changed. Whichever session is in the main pane draws it, so the story costs one narrator, not one per session.
+- `/fables tower off` and `/fables tower on`: hide or show the other sessions; off, each session plays its own cartoon again.
+- `/fables recap` writes today's recap, a page that plays the day's scenes in turn with every headline and its time (`/fables recap 2026-10-03` for another day). The narrator logs each scene to `history-<date>.jsonl`.
+
 ## The scenes
 
 <p align="center"><img src="assets/scenes.gif" alt="A tour of the seven scenes: forest, space, city, desert, volcano, lab and night village" width="960"></p>
