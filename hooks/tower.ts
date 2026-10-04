@@ -139,3 +139,19 @@ export function rank(beacons: readonly Beacon[], at: { now: number; self: string
     .filter(b => b.sessionId !== at.self && b.status !== 'ended' && at.now - b.aliveAt <= STALE_MS)
     .sort((a, b) => ORDER[a.status] - ORDER[b.status] || (a.status === 'waiting' ? a.since - b.since : b.since - a.since))
 }
+
+/**
+ * Who narrates the combined story: one session at a time holds a lease in the
+ * tower's folder and renews it every beat. A lease that ran out (its holder
+ * closed or crashed) goes to the next session that looks.
+ */
+export type Lease = { sessionId: string; until: number }
+
+/** A lease lasts a few beats, so one missed write does not hand it over. */
+export const LEASE_MS = 15_000
+
+/** Whether `self` narrates now, and the lease to write when it does. */
+export function claimLease(current: Lease | null, self: string, now: number): { isMine: true; lease: Lease } | { isMine: false } {
+  if (current && current.sessionId !== self && current.until > now) return { isMine: false }
+  return { isMine: true, lease: { sessionId: self, until: now + LEASE_MS } }
+}

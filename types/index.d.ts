@@ -92,10 +92,8 @@ declare module 'claude-code' {
       tower: FablesTowerRow[]
       /** Whether the band shows the other sessions: the combined story, or their list until it is written. */
       towerOn: boolean
-      /** The combined story's scene, written by the session in the main pane. */
+      /** The combined story's latest scene, as the session holding the narrator lease wrote it. */
       ensemble: FablesEnsembleScene | null
-      /** The time of the last heartbeat: the band reads it, so the main pane is drawn again, and so asked, every beat. */
-      pulse: number
     }
   }
 }

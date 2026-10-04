@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { type Beacon, rank, rowFor, STALE_MS, Tracker } from '../hooks/tower'
+import { type Beacon, claimLease, LEASE_MS, rank, rowFor, STALE_MS, Tracker } from '../hooks/tower'
 
 const NOW = 10_000_000
 
@@ -76,6 +76,18 @@ describe('the control tower', () => {
     t.prompt('price the drywall', 'RFQ board', 1)
     for (const line of ['read takeoff.csv', 'read takeoff.csv', 'searched code for "unit price"', 'edited pricing.ts', 'ran shell: npm test']) t.toolStart('Bash', line, 2)
     expect(t.beacon.recent).toEqual(['searched code for "unit price"', 'edited pricing.ts', 'ran shell: npm test'])
+  })
+
+  test('one session at a time holds the narrator lease: it renews it, and another takes it only once it runs out', () => {
+    // Nobody holds it: the first to look takes it.
+    expect(claimLease(null, 'a', NOW)).toEqual({ isMine: true, lease: { sessionId: 'a', until: NOW + LEASE_MS } })
+    const held = { sessionId: 'a', until: NOW + LEASE_MS }
+    // Another session leaves a live lease alone.
+    expect(claimLease(held, 'b', NOW + 1000)).toEqual({ isMine: false })
+    // Its holder renews it.
+    expect(claimLease(held, 'a', NOW + 5000)).toEqual({ isMine: true, lease: { sessionId: 'a', until: NOW + 5000 + LEASE_MS } })
+    // A holder that stopped renewing (closed, crashed) loses it to the next session that looks.
+    expect(claimLease(held, 'b', NOW + LEASE_MS + 1)).toEqual({ isMine: true, lease: { sessionId: 'b', until: NOW + 2 * LEASE_MS + 1 } })
   })
 
   test('a row names the session and says how long it has been in its state', () => {

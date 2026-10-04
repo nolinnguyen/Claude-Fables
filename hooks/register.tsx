@@ -9,7 +9,7 @@ import { summarizeTool } from './activity'
 import { buildEnsemblePrompt, ENSEMBLE_SYSTEM, ensembleFromReply, MAX_CAST } from './ensemble'
 import { backoffMs } from './narrator'
 import { ensembleToSvg, H, MAX_SVG, resumeAt, sceneToSvg, speaksAfter, W } from './svg'
-import { type Beacon, rank, rowFor, STALE_MS, Tracker } from './tower'
+import { type Beacon, claimLease, type Lease, rank, rowFor, STALE_MS, Tracker } from './tower'
 
 const scene = atom({ plugin: 'fables', key: 'scene' } as const, null)
 const enabled = atom({ plugin: 'fables', key: 'enabled' } as const, true)
@@ -17,7 +17,6 @@ const style = atom({ plugin: 'fables', key: 'style' } as const, DEFAULT_LOOK)
 const tower = atom({ plugin: 'fables', key: 'tower' } as const, [] as FablesTowerRow[])
 const towerOn = atom({ plugin: 'fables', key: 'towerOn' } as const, true)
 const ensemble = atom({ plugin: 'fables', key: 'ensemble' } as const, null as FablesEnsembleScene | null)
-const pulse = atom({ plugin: 'fables', key: 'pulse' } as const, 0)
 
 const STORE_ENABLED = 'enabled'
 const STORE_PIXEL = 'pixelArt'
@@ -32,11 +31,10 @@ const STORE_TOWER = 'tower'
 const TOWER_DIR = 'C:/dev/.cache/fables-tower'
 /** How often a session refreshes its beacon and reads the others'. */
 const TOWER_EVERY_MS = 5000
-/**
- * The app asks only the main pane to draw the band. A session asked within this
- * long is the one on screen: it alone narrates, so the story costs one narrator.
- */
-const ON_SCREEN_MS = 15_000
+/** The narrator's lease: one session on the machine at a time writes the combined story. */
+const LEASE_FILE = `${TOWER_DIR}/narrator.lease`
+/** The combined story's latest scene, which every session reads and the main pane draws. */
+const STORY_FILE = `${TOWER_DIR}/story.ensemble`
 /** The combined story is asked for at most this often, and only when an agent's news changed. */
 const ENSEMBLE_GAP_MS = 8000
 /** How many headlines the combined story remembers, for continuity. */
@@ -132,13 +130,17 @@ type Tower = {
   writing: Promise<void>
   /** Every live session's beacon, this one's included, the ones that need the person first. */
   live: Beacon[]
-  /** When the app last asked this session to draw the band. */
-  askedAt: number
-  /** The combined story: the news it was last written from, its headlines, and its narrator's pace. */
-  story: { key: string; headlines: string[]; isAsking: boolean; nextAt: number; failures: number }
+  /** Whether this session holds the narrator's lease. */
+  narrates: boolean
+  /** Mirrors of the switches, for the timers: Fables on, and the other sessions shown. */
+  isOn: boolean
+  isTowerOn: boolean
+  /** The combined story: the news it was last written from, its headlines, its file as last read, and its narrator's pace. */
+  story: { key: string; headlines: string[]; read: string; isAsking: boolean; nextAt: number; failures: number }
 }
 
-const isOnScreen = (t: Tower, now: number) => now - t.askedAt < ON_SCREEN_MS
+/** Whether the band shows the combined story rather than this session's own cartoon. */
+const isEnsemble = (t: Tower) => t.isOn && t.isTowerOn && hasOthers(t)
 const hasOthers = (t: Tower) => t.live.some(b => b.sessionId !== t.tracker?.beacon.sessionId)
 
 /** Says once per session, in the transcript, why the tower cannot do its part. */
@@ -164,7 +166,11 @@ function publish($: EngineInterface, t: Tower): Promise<void> {
 /** After /clear or a resume the session goes on under a new id: its beacon starts over under that one. */
 async function follow($: EngineInterface, t: Tower) {
   const id = await $.session.id()
-  if (t.tracker && t.tracker.beacon.sessionId !== id) t.tracker = new Tracker(id, t.cwd, await $.clock.now())
+  if (!t.tracker || t.tracker.beacon.sessionId === id) return
+  // The old id's beacon says it ended, so it does not stand on stage as a second agent until it goes stale.
+  t.tracker.end(await $.clock.now())
+  await publish($, t)
+  t.tracker = new Tracker(id, t.cwd, await $.clock.now())
 }
 
 /** Reads every session's beacon and lists the others; a file caught mid-write is read again next time. */
@@ -195,6 +201,42 @@ async function scan($: EngineInterface, t: Tower) {
   if (key === t.shown) return
   t.shown = key
   await update($, tower, () => rows)
+}
+
+/** Takes or renews the narrator's lease, or leaves it to the session that holds it. */
+async function lead($: EngineInterface, t: Tower) {
+  const self = t.tracker?.beacon.sessionId
+  if (!self) return
+  let current: Lease | null = null
+  try {
+    current = JSON.parse(String(await $.fs.read(LEASE_FILE))) as Lease
+  } catch {
+    // No lease yet, or one caught mid-write: claim it.
+  }
+  const claim = claimLease(current, self, await $.clock.now())
+  t.narrates = claim.isMine
+  if (claim.isMine) await $.fs.write(LEASE_FILE, JSON.stringify(claim.lease)).catch(err => logOnce($, t, 'take the narrator lease', err))
+}
+
+/** Loads the combined story's latest scene, as the narrator last wrote it. */
+async function followStory($: EngineInterface, t: Tower) {
+  let text: string
+  try {
+    text = String(await $.fs.read(STORY_FILE))
+  } catch {
+    return
+  }
+  if (text === t.story.read) return
+  t.story.read = text
+  try {
+    const saved = JSON.parse(text) as { scene: FablesEnsembleScene; key: string; headlines: string[] }
+    // Whoever narrates next carries the story on from here.
+    t.story.key = saved.key
+    t.story.headlines = saved.headlines
+    await update($, ensemble, () => saved.scene)
+  } catch {
+    // Mid-write: read whole next beat.
+  }
 }
 
 /** The most sessions the band lists; the rest are counted in the header. */
@@ -242,7 +284,7 @@ function towerLine(tool: string, input: Readonly<Record<string, unknown>>): stri
  */
 async function narrateEnsemble($: EngineInterface, t: Tower, model: NarratorModel) {
   const now = await $.clock.now()
-  if (!isOnScreen(t, now) || !hasOthers(t) || !(await read($, towerOn))) return
+  if (!t.narrates || !isEnsemble(t)) return
   if (t.story.isAsking || now < t.story.nextAt) return
   const agents = t.live.slice(0, MAX_CAST).map(b => ({ id: b.sessionId, title: b.title, status: b.status, recent: b.recent }))
   const key = JSON.stringify(agents.map(a => [a.id, a.status, a.recent]))
@@ -255,6 +297,9 @@ async function narrateEnsemble($: EngineInterface, t: Tower, model: NarratorMode
       t.story.key = key
       t.story.failures = 0
       t.story.headlines = [...t.story.headlines, next.headline].filter(Boolean).slice(-MAX_HEADLINES)
+      const text = JSON.stringify({ scene: next, key, headlines: t.story.headlines })
+      t.story.read = text
+      await $.fs.write(STORY_FILE, text).catch(err => logOnce($, t, 'share the combined story', err))
       await update($, ensemble, () => next)
     } else t.story.failures++
   } catch (err) {
@@ -267,7 +312,7 @@ async function narrateEnsemble($: EngineInterface, t: Tower, model: NarratorMode
 }
 
 export const register: Register = (on, options) => {
-  const t: Tower = { cwd: '', shown: '', hasLogged: new Set(), writing: Promise.resolve(), live: [], askedAt: 0, story: { key: '', headlines: [], isAsking: false, nextAt: 0, failures: 0 } }
+  const t: Tower = { cwd: '', shown: '', hasLogged: new Set(), writing: Promise.resolve(), live: [], narrates: false, isOn: true, isTowerOn: true, story: { key: '', headlines: [], read: '', isAsking: false, nextAt: 0, failures: 0 } }
   const n = new Director()
   const band: Band = { box: bandBox(NaN) }
   // The config menu's choice is the default; /fables model overrides it.
@@ -289,13 +334,14 @@ export const register: Register = (on, options) => {
       description: 'Claude Fables: turn the cartoons above the prompt on or off, pick a style, or pick the model that writes them',
       argumentHint: '[on|off|style [name|off]|model [sonnet|haiku]|tower [on|off]]',
     })
-    // A session's own cartoon is written only while it is on screen with no other agent live:
-    // with others, the combined story takes the band; off screen, nobody would see it.
-    $.clock.every(1000, async () => {
-      if (isOnScreen(t, await $.clock.now()) && !hasOthers(t)) void n.tick(host($, band))
+    // A session's own cartoon is written only while the band would show it: with other agents
+    // live (and the tower on), the combined story takes the band instead.
+    $.clock.every(1000, () => {
+      if (!isEnsemble(t)) void n.tick(host($, band))
     })
-    const isTowerOn = (await $.store.get(STORE_TOWER)) !== false
-    await update($, towerOn, () => isTowerOn)
+    t.isOn = n.isOn
+    t.isTowerOn = (await $.store.get(STORE_TOWER)) !== false
+    await update($, towerOn, () => t.isTowerOn)
     t.cwd = await $.session.cwd()
     t.tracker = new Tracker(await $.session.id(), t.cwd, await $.clock.now())
     await publish($, t)
@@ -304,7 +350,8 @@ export const register: Register = (on, options) => {
       t.tracker?.alive(await $.clock.now())
       await publish($, t)
       await scan($, t)
-      await update($, pulse, () => t.tracker?.beacon.aliveAt ?? 0)
+      await lead($, t)
+      await followStory($, t)
       await narrateEnsemble($, t, n.model)
     })
     return next(e)
@@ -338,6 +385,7 @@ export const register: Register = (on, options) => {
     if (tw) {
       const value = tw[1] === 'on' ? true : tw[1] === 'off' ? false : !(await read($, towerOn))
       await $.store.set(STORE_TOWER, value)
+      t.isTowerOn = value
       await update($, towerOn, () => value)
       return { text: value ? 'The control tower lists your other sessions above the prompt.' : 'The control tower is off.' }
     }
@@ -346,6 +394,7 @@ export const register: Register = (on, options) => {
     if (px) return chooseLook($, n, px[1] === 'off' || (!px[1] && n.look === 'pixel') ? 'original' : 'pixel')
     const value = arg === 'on' ? true : arg === 'off' ? false : !n.isOn
     await setOn($, n, host($, band), value)
+    t.isOn = value
     return {
       text: value
         ? `Claude Fables is on: cartoons written by ${MODEL_LABELS[n.model]} play above the prompt while Claude works.`
@@ -417,11 +466,8 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    if (e.surface === 'desktop') t.askedAt = await $.clock.now()
-    // Read only to be drawn again every heartbeat: that keeps the app asking while this pane is on screen.
-    await read($, pulse)
     const isTowerOn = await read($, towerOn)
-    const story = isTowerOn && e.surface === 'desktop' && hasOthers(t) ? await read($, ensemble) : null
+    const story = isTowerOn && (await read($, enabled)) && e.surface === 'desktop' && hasOthers(t) ? await read($, ensemble) : null
     if (story) {
       const liveIds = new Set(t.live.map(b => b.sessionId))
       const shown = { ...story, cast: story.cast.filter(c => liveIds.has(c.id)) }
