@@ -40,7 +40,7 @@ describe('the ensemble scene', () => {
     const prompt = buildEnsemblePrompt(
       [
         { ...AGENTS[0]!, recent: ['asks you: which thumbnail?'] },
-        { ...AGENTS[1]!, recent: ['read takeoff.csv', 'edited pricing.ts'] },
+        { ...AGENTS[1]!, ask: 'price the drywall for job 214', recent: ['read takeoff.csv', 'edited pricing.ts'] },
         { ...AGENTS[2]!, recent: ['ran shell: npm test'] },
       ],
       ['Two critters at work in the lab.'],
@@ -49,6 +49,7 @@ describe('the ensemble scene', () => {
     expect(prompt).toContain('id "jc" (Job Costing): FAILED')
     expect(prompt).toContain('id "rfq" (RFQ board): working')
     expect(prompt).toContain('edited pricing.ts')
+    expect(prompt).toContain('asked for: "price the drywall for job 214"')
     expect(prompt).toContain('Two critters at work in the lab.')
     // A fenced reply with chatter around it still comes back as a scene.
     const reply = 'Here you go:\n```json\n{"backdrop":"lab","headline":"Lab night.","cast":[{"id":"fq","action":"wave","x":20,"line":"Help?"}]}\n```'

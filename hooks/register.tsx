@@ -286,8 +286,8 @@ async function narrateEnsemble($: EngineInterface, t: Tower, model: NarratorMode
   const now = await $.clock.now()
   if (!t.narrates || !isEnsemble(t)) return
   if (t.story.isAsking || now < t.story.nextAt) return
-  const agents = t.live.slice(0, MAX_CAST).map(b => ({ id: b.sessionId, title: b.title, status: b.status, recent: b.recent }))
-  const key = JSON.stringify(agents.map(a => [a.id, a.status, a.recent]))
+  const agents = t.live.slice(0, MAX_CAST).map(b => ({ id: b.sessionId, title: b.title, status: b.status, ask: b.ask, recent: b.recent }))
+  const key = JSON.stringify(agents.map(a => [a.id, a.status, a.ask, a.recent]))
   if (key === t.story.key) return
   t.story.isAsking = true
   try {
@@ -409,7 +409,8 @@ export const register: Register = (on, options) => {
 
   on('classic.UserPromptSubmit', async ($, e, next) => {
     await follow($, t)
-    t.tracker?.prompt(e.prompt, e.session_title, await $.clock.now())
+    // Notifications, peers and wakeups come in as prompts too; only the person's say what the session is for.
+    t.tracker?.prompt(e.prompt, e.session_title, await $.clock.now(), e.source === undefined || e.source === 'user')
     await publish($, t)
     return next(e)
   })

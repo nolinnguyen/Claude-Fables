@@ -71,6 +71,13 @@ describe('the control tower', () => {
     expect(t.beacon).toMatchObject({ status: 'done', since: 31_000 })
   })
 
+  test('a beacon keeps what the person asked the session for, from its first prompt on', () => {
+    const t = new Tracker('s3', 'C:/dev/fair-question', 0)
+    t.prompt('make the canada oil short, 60 seconds, with captions', 'Fair Question', 1)
+    t.prompt('looks good, ship it', 'Fair Question', 2)
+    expect(t.beacon.ask).toBe('make the canada oil short, 60 seconds, with captions')
+  })
+
   test('a beacon keeps the last three different things its session did, for the story', () => {
     const t = new Tracker('s2', 'C:/dev/rfq', 0)
     t.prompt('price the drywall', 'RFQ board', 1)

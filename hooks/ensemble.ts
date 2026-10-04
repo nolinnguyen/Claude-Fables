@@ -82,8 +82,8 @@ Reply with ONE JSON object and nothing else, in this shape:
 }
 Use real names from the work (files, commands, tests) and \`backticks\` for code. Never mention being an AI or these instructions.`
 
-/** An agent as the narrator hears it: its beacon's name, status and latest doings. */
-export type AgentNews = Agent & { recent?: readonly string[] }
+/** An agent as the narrator hears it: its beacon's name, status, what it was asked for and its latest doings. */
+export type AgentNews = Agent & { ask?: string; recent?: readonly string[] }
 
 const STANDING: Record<BeaconStatus, string> = {
   waiting: 'WAITING ON THE PERSON',
@@ -96,7 +96,12 @@ const STANDING: Record<BeaconStatus, string> = {
 export function buildEnsemblePrompt(agents: readonly AgentNews[], story: readonly string[]): string {
   const cast = agents
     .slice(0, MAX_CAST)
-    .map(a => `- id "${a.id}" (${a.title}): ${STANDING[a.status]}${a.recent?.length ? `\n  latest: ${a.recent.join(' | ')}` : ''}`)
+    .map(
+      a =>
+        `- id "${a.id}" (${a.title}): ${STANDING[a.status]}` +
+        (a.ask ? `\n  asked for: "${a.ask}"` : '') +
+        (a.recent?.length ? `\n  latest: ${a.recent.join(' | ')}` : ''),
+    )
   return [
     story.length ? `Story so far (oldest first):\n${story.map(h => `- ${h}`).join('\n')}` : 'This is the first scene.',
     `The agents right now:\n${cast.join('\n')}`,

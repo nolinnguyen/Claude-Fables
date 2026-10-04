@@ -22,6 +22,8 @@ export type Beacon = {
   since: number
   /** The latest thing it did or said, one short line. */
   doing: string
+  /** What the person asked the session for: its first prompt from the person. Absent in older beacons. */
+  ask?: string
   /** The last few different things it did, oldest first: what the story is told from. Absent in beacons from before it was kept. */
   recent?: string[]
   /** The last heartbeat: a beacon not refreshed for STALE_MS is a session that is gone. */
@@ -35,6 +37,8 @@ export const STALE_MS = 60_000
 const ASKS_PERSON = new Set(['AskUserQuestion', 'ExitPlanMode'])
 
 const MAX_DOING = 120
+/** What the session was asked for, cut to this. */
+const MAX_ASK = 160
 /** How many of a session's latest doings its beacon keeps for the story. */
 const MAX_RECENT = 3
 const MAX_TITLE = 48
@@ -64,8 +68,13 @@ export class Tracker {
     this.beacon = { ...this.beacon, aliveAt: now }
   }
 
-  /** The person sent a prompt: the app's title for the session when it has one, else the first prompt's start. */
-  prompt(text: string, title: string | undefined, now: number) {
+  /**
+   * A prompt came in: the app's title for the session when it has one, else the
+   * first prompt's start. The first one from the person (not a notification or a
+   * peer) is what the session was asked to do.
+   */
+  prompt(text: string, title: string | undefined, now: number, isFromPerson = true) {
+    if (isFromPerson && this.beacon.ask === undefined && text.trim()) this.beacon = { ...this.beacon, ask: cut(text, MAX_ASK) }
     if (title) {
       this.beacon = { ...this.beacon, title: cut(title, MAX_TITLE) }
       this.hasTitle = true
