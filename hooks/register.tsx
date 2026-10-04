@@ -558,7 +558,8 @@ export const register: Register = (on, options) => {
         return <Svg source={resumed.length <= MAX_SVG ? resumed : t.staged.svg} alt={shown.headline} width={band.box.width} height={band.box.height} isInteractive />
       }
     }
-    const rows = isTowerOn ? await read($, tower) : []
+    // /fables off hides everything: the list of other sessions too, not just the cartoons.
+    const rows = isTowerOn && (await read($, enabled)) ? await read($, tower) : []
     const list = rows.length > 0 ? towerTree($, e, rows) : null
     const current = e.surface === 'desktop' && (await read($, enabled)) ? await read($, scene) : null
     if (!current) return list ?? next(e)
