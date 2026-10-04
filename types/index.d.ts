@@ -80,6 +80,8 @@ export type FablesEnsembleScene = {
     action: FablesHeroAction
     x: number
     line: string
+    /** Another agent's id: this one goes over to it (to help, cheer, ask, hand something over). */
+    toward?: string
   }[]
 }
 

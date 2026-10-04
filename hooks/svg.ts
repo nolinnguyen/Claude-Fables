@@ -1087,36 +1087,54 @@ export function ensembleToSvg(scene: EnsembleScene, options: { width?: number; h
     const sky = art?.sky ?? stage.sky
     const ground = art?.ground ?? stage.ground
     const edge = look.edge ?? sky
+    const home = new Map(order.map((c, i) => [c.id, slot * (i + 0.5)]))
+    const pct = (cx: number) => Math.min(100, Math.max(0, ((cx - HERO_W / 2) / (sw - HERO_W)) * 100))
     const placed = order.map((c, i) => {
-      const cx = slot * (i + 0.5)
-      const at = Math.min(100, Math.max(0, ((cx - HERO_W / 2) / (sw - HERO_W)) * 100))
-      const plan = hero({ ...base, hero: { action: c.action, from: at, to: at } }, stage.floor, sw, tier.figure, tint)
-      return { c, i, cx, plan }
+      const start = home.get(c.id)!
+      const target = c.toward === undefined ? undefined : home.get(c.toward)
+      // Going over to another agent: walk up beside it, on the near side, then do the scene's action there.
+      const stop = target === undefined ? start : target + (target > start ? -1 : 1) * (HERO_W + 8)
+      const travels = MOTION_TIMING[c.action].kind === 'travel'
+      const move = target === undefined || travels ? { action: c.action } : { action: 'walk' as const, then: c.action }
+      const plan = hero({ ...base, hero: { ...move, from: pct(start), to: pct(stop) } }, stage.floor, sw, tier.figure, tint)
+      return { c, i, cx: plan.endX + HERO_W / 2, plan }
     })
     const heroes = placed
       .map(({ c, i, plan }) => `<g data-agent="${escapeXml(c.id)}" data-status="${c.status}" data-tint="${i}" filter="url(#${idPrefix}t${i})">${plan.svg}</g>`)
       .join('')
     const heroBand: Rect = { x: 0, y: stage.floor - HERO_H - 40, w: sw, h: HERO_H + 56 }
     // Name tags under the feet, short lines above the heads, then the spotlight's bubble clear of all of them.
+    // Name tags under the feet, slid apart where two would touch (a walker stops beside another).
     const tagY = Math.min(H - 2, stage.floor + 16)
-    const tags = placed.map(({ c, cx }) => label(cutTo(c.name, chars), cx, tagY, STATUS_TAG[c.status], sw)).join('')
+    const tagged = placed
+      .map(({ c, cx }) => {
+        const text = cutTo(c.name, chars)
+        const w = text.length * 5 + 8
+        return { c, text, w, x: Math.min(sw - w - 2, Math.max(2, cx - w / 2)) }
+      })
+      .sort((a, b) => a.x - b.x)
+    for (let i = 1; i < tagged.length; i++) tagged[i]!.x = Math.max(tagged[i]!.x, tagged[i - 1]!.x + tagged[i - 1]!.w + 4)
+    const tags = tagged.map(({ c, text, w, x }) => label(text, x + w / 2, tagY, STATUS_TAG[c.status], sw)).join('')
+    // Short lines above the heads, each raised a row while it would cover one already placed.
     const shortOf = (line: string) => cutAtWord(line.replace(/`/g, ''), chars)
-    const shortLines = placed
-      .filter(({ c }) => c.id !== scene.spotlight && c.line)
-      .map(({ c, cx, plan }) => smallBubble([shortOf(c.line)], cx, plan.endY - 6 - heroReach(c.action), sw))
-      .join('')
-    const avoid: Rect[] = [
-      ...placed.flatMap(({ c, cx, plan }) => {
-        if (c.id === scene.spotlight) return []
-        const reach = heroReach(c.action)
-        const body: Rect = { x: plan.endX - 4, y: plan.endY - 8 - reach, w: HERO_W + 8, h: HERO_H + 12 + reach }
-        if (!c.line) return [body]
-        const w = shortOf(c.line).length * 5 + 8
-        return [body, { x: cx - w / 2, y: plan.endY - 6 - reach - 13, w, h: 13 }]
-      }),
-      ...(head ? [{ x: 0, y: 0, w: head.w, h: head.h }] : []),
-      ...stage.keep,
-    ]
+    const overlaps = (a: Rect, b: Rect) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+    const taken: Rect[] = head ? [{ x: 0, y: 0, w: head.w, h: head.h }] : []
+    const bodies: Rect[] = []
+    const shorts: { text: string; cx: number; bottom: number }[] = []
+    for (const { c, cx, plan } of [...placed].sort((a, b) => a.cx - b.cx)) {
+      const reach = heroReach(c.action)
+      if (c.id !== scene.spotlight) bodies.push({ x: plan.endX - 4, y: plan.endY - 8 - reach, w: HERO_W + 8, h: HERO_H + 12 + reach })
+      if (c.id === scene.spotlight || !c.line) continue
+      const text = shortOf(c.line)
+      const w = text.length * 5 + 8
+      const x = Math.min(sw - w - 2, Math.max(2, cx - w / 2))
+      let bottom = plan.endY - 6 - reach
+      while (bottom - 13 > 18 && taken.some(r => overlaps(r, { x, y: bottom - 13, w, h: 13 }))) bottom -= 15
+      taken.push({ x, y: bottom - 13, w, h: 13 })
+      shorts.push({ text, cx, bottom })
+    }
+    const shortLines = shorts.map(({ text, cx, bottom }) => smallBubble([text], cx, bottom, sw)).join('')
+    const avoid: Rect[] = [...bodies, ...taken, ...stage.keep]
     const star = placed.find(({ c }) => c.id === scene.spotlight)
     const tone: Tone | undefined = star ? (star.c.status === 'waiting' || star.c.status === 'failed' ? 'trouble' : star.c.status === 'done' ? 'milestone' : 'work') : undefined
     const speech =

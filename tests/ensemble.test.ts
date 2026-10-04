@@ -108,6 +108,28 @@ describe('the ensemble scene', () => {
     expect(ensembleToSvg(two, { width: 1100, height: 192 })).toContain('data-stage="lit"')
   })
 
+  test('a character can go over to another agent: only toward a real one, and the drawing walks it there', () => {
+    const scene = parseEnsemble(
+      {
+        backdrop: 'lab',
+        headline: 'Money Lane walks over to cheer Job Costing on',
+        spotlight: 'rfq',
+        cast: [
+          { id: 'fq', action: 'wave', x: 10, line: 'hi', toward: 'jc' },
+          { id: 'rfq', action: 'inspect', x: 50, line: 'pricing', toward: 'rfq' },
+          { id: 'jc', action: 'panic', x: 90, line: 'help', toward: 'ghost' },
+        ],
+      },
+      AGENTS,
+    )!
+    expect(scene.cast.map(c => c.toward)).toEqual(['jc', undefined, undefined])
+    const svg = ensembleToSvg(scene, { width: 1100, height: 192 })
+    const walker = /<g data-agent="fq"[^>]*>([\s\S]*?)<\/g><g data-agent=/.exec(svg)?.[1] ?? ''
+    expect(walker).toMatch(/type="translate" values="(-?[\d.]+) [\d.]+;(-?[\d.]+) [\d.]+"/)
+    const [, from, to] = /type="translate" values="(-?[\d.]+) [\d.]+;(-?[\d.]+) [\d.]+"/.exec(walker)!
+    expect(Number(to)).toBeGreaterThan(Number(from) + 100)
+  })
+
   test('an answer that is not a scene is no scene', () => {
     expect(parseEnsemble('just chatter', AGENTS)).toBe(null)
     expect(parseEnsemble({ backdrop: 'mars', cast: [] }, AGENTS)).toBe(null)

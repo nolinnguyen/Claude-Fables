@@ -50,11 +50,14 @@ export function parseEnsemble(raw: unknown, agents: readonly Agent[]): EnsembleS
   for (const c of Array.isArray(raw.cast) ? raw.cast : []) {
     if (isObject(c) && typeof c.id === 'string' && !written.has(c.id)) written.set(c.id, c)
   }
+  const onStage = new Set(agents.slice(0, MAX_CAST).map(a => a.id))
   const cast = agents.slice(0, MAX_CAST).map((agent): CastMember => {
     const c = written.get(agent.id) ?? {}
     const action = HERO_ACTIONS.find(a => a === c.action) ?? DEFAULT_ACTION[agent.status]
     const x = typeof c.x === 'number' && Number.isFinite(c.x) ? Math.min(100, Math.max(0, c.x)) : 50
-    return { id: agent.id, name: agent.title, status: agent.status, action, x, line: cleanText(c.line, MAX_LINE) ?? '' }
+    // Going over to another agent: only one that is on this stage, and never to itself.
+    const toward = typeof c.toward === 'string' && c.toward !== agent.id && onStage.has(c.toward) ? c.toward : undefined
+    return { id: agent.id, name: agent.title, status: agent.status, action, x, line: cleanText(c.line, MAX_LINE) ?? '', ...(toward ? { toward } : {}) }
   })
   // The spotlight is the agent the narrator named, else the first that needs the person, else the first.
   const named = cast.find(c => c.id === raw.spotlight)
@@ -77,7 +80,9 @@ Reply with ONE JSON object and nothing else, in this shape:
   "cast": [ one entry per agent, using its id exactly:
     { "id": the agent's id, "action": one of "walk" | "run" | "fly" | "carry" | "sneak" | "jump" | "tumble" | "dig" | "inspect" | "think" | "point" | "peek" | "spin" | "wave" | "sleep" | "panic" | "dance" | "celebrate" | "trip" | "shrug",
       "x": where it stands, 0-100 across the stage (spread them out),
-      "line": what it says about ITS real work: the spotlight's at most 70 characters, every other one at most 28 }
+      "line": what it says about ITS real work: the spotlight's at most 70 characters, every other one at most 28,
+      "toward"?: another agent's id, when this critter goes over to it: to help one that FAILED, cheer one that finished, ask, or hand something over }
+Make the critters interact when their work touches: at most one or two go "toward" another in a scene.
   ]
 }
 Use real names from the work (files, commands, tests) and \`backticks\` for code. Never mention being an AI or these instructions.`
