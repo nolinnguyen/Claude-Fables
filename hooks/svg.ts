@@ -1,5 +1,7 @@
 import type { FablesHeroAction, FablesProp, FablesScene } from '../types'
 
+import type { EnsembleScene } from './ensemble'
+
 import { type Motion, MOTION_TIMING } from './clawd3d'
 import { type HeroPainter, motionSvg } from './hero3d'
 import { gradeFilter } from './grade'
@@ -1000,3 +1002,85 @@ export function resumeAt(svg: string, seconds: number): string {
 
 /** How long a drawn scene's bubble waits for Claude before it appears, in seconds (0 when it appears at once). */
 export const speaksAfter = (svg: string) => Number(/data-part="speech"[^>]*\sdata-speaks="([\d.]+)"/.exec(svg)?.[1] ?? 0)
+
+// ---------------------------------------------------------------- the ensemble
+
+/** A character's name tag, colored by how its agent stands: yellow waits on the person, red failed, green done. */
+const STATUS_TAG: Record<EnsembleScene['cast'][number]['status'], TagStyle> = {
+  waiting: { fill: '#f2c94c', ink: '#1f1e1d', stroke: '#8a6d1a' },
+  failed: { fill: '#e5534b', ink: '#ffffff', stroke: '#7a2420' },
+  done: { fill: '#57ab5a', ink: '#ffffff', stroke: '#2b5b2d' },
+  working: { fill: '#ece9df', ink: '#1f1e1d', stroke: '#6b6862' },
+  ended: { fill: '#9a978f', ink: '#1f1e1d', stroke: '#5c5a55' },
+}
+
+const cutTo = (text: string, max: number) => (text.length > max ? `${text.slice(0, Math.max(1, max - 1)).trimEnd()}…` : text)
+
+/** At most two lines of at most `max` characters, broken between words. */
+function twoLines(text: string, max: number): string[] {
+  if (text.length <= max) return text ? [text] : []
+  const room = text.slice(0, max + 1)
+  const space = room.lastIndexOf(' ')
+  const first = space > max / 3 ? text.slice(0, space) : text.slice(0, max)
+  return [first, cutTo(text.slice(first.length).trim(), max)]
+}
+
+/** A character's own line, in a small paper bubble whose bottom sits at `bottom`. */
+function smallBubble(lines: readonly string[], cx: number, bottom: number, sw: number): string {
+  const w = Math.max(...lines.map(l => l.length)) * 5 + 8
+  const h = lines.length * 9 + 4
+  const x = Math.min(sw - w - 2, Math.max(2, cx - w / 2))
+  const y = bottom - h
+  return (
+    `<rect x="${n(x)}" y="${n(y)}" width="${w}" height="${h}" rx="2" fill="${PAPER}" stroke="${INK}" stroke-width="1"/>` +
+    lines.map((l, i) => `<text x="${n(x + 4)}" y="${n(y + 10 + i * 9)}" font-family="${FONT}" font-size="8" fill="${INK}">${escapeXml(l)}</text>`).join('')
+  )
+}
+
+/**
+ * The combined story: one stage, one pixel-art critter per agent, each with its
+ * name tag under its feet and its line above its head, and the headline on top.
+ * The characters take even places across the stage in the order the narrator
+ * put them, so none covers another.
+ */
+export function ensembleToSvg(scene: EnsembleScene, options: { width?: number; height?: number; look?: string } = {}): string {
+  const sw = options.width && options.height ? stageWidth(options.width, options.height) : W
+  const width = options.width ?? sw
+  const height = options.height ?? Math.round((width * H) / sw)
+  const look = lookFor(options.look)
+  const rand = rng(`${scene.backdrop}|${scene.headline}`)
+  const base: FablesScene = { backdrop: scene.backdrop, palette: {}, hero: { action: 'think', from: 50, to: 50 }, props: [], caption: scene.headline }
+  const stage = backdrop(base, rand, sw)
+  const figure: Figure = { kind: 'pixel', cell: look.cell }
+  const order = [...scene.cast].sort((a, b) => a.x - b.x)
+  const slot = sw / Math.max(1, order.length)
+  const chars = Math.max(6, Math.floor((slot - 12) / 5))
+  const cast = order
+    .map((c, i) => {
+      const cx = slot * (i + 0.5)
+      const at = Math.min(100, Math.max(0, ((cx - HERO_W / 2) / (sw - HERO_W)) * 100))
+      const plan = hero({ ...base, hero: { action: c.action, from: at, to: at } }, stage.floor, sw, figure)
+      // Backticks read as noise at this size: the words alone.
+      const lines = twoLines(c.line.replace(/`/g, ''), chars)
+      return (
+        `<g data-agent="${escapeXml(c.id)}" data-status="${c.status}">` +
+        plan.svg +
+        label(cutTo(c.name, chars), cx, stage.floor + 16, STATUS_TAG[c.status], sw) +
+        (lines.length ? smallBubble(lines, cx, plan.endY - 6 - heroReach(c.action), sw) : '') +
+        `</g>`
+      )
+    })
+    .join('')
+  const headline = scene.headline ? title(cutTo(scene.headline, Math.floor((sw - 30) / look.charW)), '#efe6d2', look) : ''
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${sw} ${H}" width="${width}" height="${height}" ` +
+    `shape-rendering="crispEdges" preserveAspectRatio="xMidYMid meet" style="display:block;background:${stage.ground}" data-part="ensemble">` +
+    `<rect x="${-sw * 4}" y="${-H * 4}" width="${sw * 9}" height="${H * 4 + GROUND_Y}" fill="${stage.sky}"/>` +
+    stage.back +
+    `<rect x="${-sw * 4}" y="${GROUND_Y}" width="${sw * 9}" height="${H * 4}" fill="${stage.ground}"/>` +
+    stage.front +
+    cast +
+    headline +
+    `</svg>`
+  )
+}

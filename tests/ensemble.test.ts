@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { buildEnsemblePrompt, ensembleFromReply, MAX_LINE, parseEnsemble } from '../hooks/ensemble'
+import { ensembleToSvg } from '../hooks/svg'
 
 /** The agents on stage, as the beacons say. */
 const AGENTS = [
@@ -52,6 +53,24 @@ describe('the ensemble scene', () => {
     // A fenced reply with chatter around it still comes back as a scene.
     const reply = 'Here you go:\n```json\n{"backdrop":"lab","headline":"Lab night.","cast":[{"id":"fq","action":"wave","x":20,"line":"Help?"}]}\n```'
     expect(ensembleFromReply(reply, AGENTS)?.cast.map(c => c.id)).toEqual(['fq', 'rfq', 'jc'])
+  })
+
+  test('one stage draws every agent once, by name, with who needs the person marked, well under the size limit', () => {
+    const six = ['Fair Question', 'RFQ board', 'Job Costing', 'Money Lane', 'Reddit mods', 'Config/Hooks'].map((title, i) => ({
+      id: `a${i}`,
+      title,
+      status: (['waiting', 'working', 'failed', 'done', 'working', 'working'] as const)[i]!,
+    }))
+    const scene = parseEnsemble(
+      { backdrop: 'city', headline: 'Fair Question is waving at you from the corner.', cast: six.map((a, i) => ({ id: a.id, action: 'walk', x: i * 15, line: `line number ${i} about \`pricing.ts\` and more words` })) },
+      six,
+    )!
+    const svg = ensembleToSvg(scene, { width: 1000, height: 192 })
+    expect(svg.startsWith('<svg')).toBe(true)
+    for (const a of six) expect(svg.split(`>${a.title}<`).length - 1).toBe(1)
+    expect(svg).toContain('data-status="waiting"')
+    expect(svg).toContain('Fair Question is waving at you')
+    expect(svg.length).toBeLessThan(60_000)
   })
 
   test('an answer that is not a scene is no scene', () => {
