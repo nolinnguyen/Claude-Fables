@@ -4,7 +4,7 @@
  * the validator that keeps exactly one character per real agent.
  */
 
-import type { FablesBackdrop, FablesHeroAction } from '../types'
+import type { FablesEnsembleScene, FablesHeroAction } from '../types'
 
 import { BACKDROPS, cleanCaption, cleanText, extractJson, HERO_ACTIONS } from './scene'
 import type { BeaconStatus } from './tower'
@@ -17,23 +17,13 @@ export const MAX_LINE = 40
 /** An agent the scene has to show, as its beacon says. */
 export type Agent = { id: string; title: string; status: BeaconStatus }
 
-export type CastMember = {
-  id: string
-  /** The agent's name, as the app shows it: the tag under the character. */
-  name: string
-  status: BeaconStatus
-  action: FablesHeroAction
-  /** Where it stands, percent of the stage; the drawing spreads characters that would overlap. */
-  x: number
-  line: string
-}
-
-export type EnsembleScene = {
-  backdrop: FablesBackdrop
-  /** The story's headline: what is going on across all of them. */
-  headline: string
-  cast: CastMember[]
-}
+/**
+ * The scene: a backdrop, a headline for what is going on across all agents, and
+ * one character per agent, its name as the app shows it, standing at `x` percent
+ * of the stage (the drawing spreads them so none overlaps), saying `line`.
+ */
+export type EnsembleScene = FablesEnsembleScene
+export type CastMember = EnsembleScene['cast'][number]
 
 /** What a character does when the narrator gave it nothing usable: what its agent is doing. */
 const DEFAULT_ACTION: Record<BeaconStatus, FablesHeroAction> = {

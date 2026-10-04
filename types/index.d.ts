@@ -67,6 +67,20 @@ export type FablesTowerRow = {
   doing: string
 }
 
+/** The combined story's scene (hooks/ensemble.ts): one stage, one character per agent. */
+export type FablesEnsembleScene = {
+  backdrop: FablesBackdrop
+  headline: string
+  cast: {
+    id: string
+    name: string
+    status: FablesTowerRow['status']
+    action: FablesHeroAction
+    x: number
+    line: string
+  }[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
     fables: {
@@ -76,8 +90,12 @@ declare module 'claude-code' {
       style: string
       /** The control tower's lines: the other live sessions on this machine, the ones that need the person first. */
       tower: FablesTowerRow[]
-      /** Whether the band lists the other sessions. */
+      /** Whether the band shows the other sessions: the combined story, or their list until it is written. */
       towerOn: boolean
+      /** The combined story's scene, written by the session in the main pane. */
+      ensemble: FablesEnsembleScene | null
+      /** The time of the last heartbeat: the band reads it, so the main pane is drawn again, and so asked, every beat. */
+      pulse: number
     }
   }
 }

@@ -3,10 +3,12 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import { DEFAULT_MODEL, Director, findModel, type Host, MODEL_LABELS, NARRATOR_MODELS, type NarratorModel } from './director'
 import { DEFAULT_LOOK, findLook, LOOK_NAMES, LOOKS, lookFor } from './looks'
-import type { FablesScene, FablesTowerRow } from '../types'
+import type { FablesEnsembleScene, FablesScene, FablesTowerRow } from '../types'
 
 import { summarizeTool } from './activity'
-import { H, MAX_SVG, resumeAt, sceneToSvg, speaksAfter, W } from './svg'
+import { buildEnsemblePrompt, ENSEMBLE_SYSTEM, ensembleFromReply, MAX_CAST } from './ensemble'
+import { backoffMs } from './narrator'
+import { ensembleToSvg, H, MAX_SVG, resumeAt, sceneToSvg, speaksAfter, W } from './svg'
 import { type Beacon, rank, rowFor, STALE_MS, Tracker } from './tower'
 
 const scene = atom({ plugin: 'fables', key: 'scene' } as const, null)
@@ -14,6 +16,8 @@ const enabled = atom({ plugin: 'fables', key: 'enabled' } as const, true)
 const style = atom({ plugin: 'fables', key: 'style' } as const, DEFAULT_LOOK)
 const tower = atom({ plugin: 'fables', key: 'tower' } as const, [] as FablesTowerRow[])
 const towerOn = atom({ plugin: 'fables', key: 'towerOn' } as const, true)
+const ensemble = atom({ plugin: 'fables', key: 'ensemble' } as const, null as FablesEnsembleScene | null)
+const pulse = atom({ plugin: 'fables', key: 'pulse' } as const, 0)
 
 const STORE_ENABLED = 'enabled'
 const STORE_PIXEL = 'pixelArt'
@@ -28,6 +32,15 @@ const STORE_TOWER = 'tower'
 const TOWER_DIR = 'C:/dev/.cache/fables-tower'
 /** How often a session refreshes its beacon and reads the others'. */
 const TOWER_EVERY_MS = 5000
+/**
+ * The app asks only the main pane to draw the band. A session asked within this
+ * long is the one on screen: it alone narrates, so the story costs one narrator.
+ */
+const ON_SCREEN_MS = 15_000
+/** The combined story is asked for at most this often, and only when an agent's news changed. */
+const ENSEMBLE_GAP_MS = 8000
+/** How many headlines the combined story remembers, for continuity. */
+const MAX_HEADLINES = 4
 const TOWER_COLORS: Record<FablesTowerRow['status'], string> = {
   waiting: 'yellow',
   failed: 'red',
@@ -111,7 +124,22 @@ async function draw($: EngineInterface, band: Band, next: FablesScene): Promise<
 }
 
 /** This session's beacon, and what the tower last listed. */
-type Tower = { tracker?: Tracker; cwd: string; shown: string; hasLogged: Set<string>; writing: Promise<void> }
+type Tower = {
+  tracker?: Tracker
+  cwd: string
+  shown: string
+  hasLogged: Set<string>
+  writing: Promise<void>
+  /** Every live session's beacon, this one's included, the ones that need the person first. */
+  live: Beacon[]
+  /** When the app last asked this session to draw the band. */
+  askedAt: number
+  /** The combined story: the news it was last written from, its headlines, and its narrator's pace. */
+  story: { key: string; headlines: string[]; isAsking: boolean; nextAt: number; failures: number }
+}
+
+const isOnScreen = (t: Tower, now: number) => now - t.askedAt < ON_SCREEN_MS
+const hasOthers = (t: Tower) => t.live.some(b => b.sessionId !== t.tracker?.beacon.sessionId)
 
 /** Says once per session, in the transcript, why the tower cannot do its part. */
 function logOnce($: EngineInterface, t: Tower, what: string, err: unknown) {
@@ -161,6 +189,7 @@ async function scan($: EngineInterface, t: Tower) {
       // Mid-write by its session: the next scan reads it whole.
     }
   }
+  t.live = rank(beacons, { now, self: '' })
   const rows = rank(beacons, { now, self }).map(b => rowFor(b, now))
   const key = JSON.stringify(rows)
   if (key === t.shown) return
@@ -207,8 +236,38 @@ function towerLine(tool: string, input: Readonly<Record<string, unknown>>): stri
   return summarizeTool(tool, input)
 }
 
+/**
+ * Writes the next scene of the combined story, when this session is the one on
+ * screen, other agents are live, and some agent's news changed since the last one.
+ */
+async function narrateEnsemble($: EngineInterface, t: Tower, model: NarratorModel) {
+  const now = await $.clock.now()
+  if (!isOnScreen(t, now) || !hasOthers(t) || !(await read($, towerOn))) return
+  if (t.story.isAsking || now < t.story.nextAt) return
+  const agents = t.live.slice(0, MAX_CAST).map(b => ({ id: b.sessionId, title: b.title, status: b.status, recent: b.recent }))
+  const key = JSON.stringify(agents.map(a => [a.id, a.status, a.recent]))
+  if (key === t.story.key) return
+  t.story.isAsking = true
+  try {
+    const reply = await $.model.complete({ model, system: ENSEMBLE_SYSTEM, prompt: buildEnsemblePrompt(agents, t.story.headlines), maxTokens: 2000, effort: 'low', timeoutMs: 30_000 })
+    const next = reply.isAnswered ? ensembleFromReply(reply.text, agents) : null
+    if (next) {
+      t.story.key = key
+      t.story.failures = 0
+      t.story.headlines = [...t.story.headlines, next.headline].filter(Boolean).slice(-MAX_HEADLINES)
+      await update($, ensemble, () => next)
+    } else t.story.failures++
+  } catch (err) {
+    t.story.failures++
+    logOnce($, t, 'write the combined story', err)
+  } finally {
+    t.story.isAsking = false
+    t.story.nextAt = (await $.clock.now()) + Math.max(ENSEMBLE_GAP_MS, backoffMs(t.story.failures))
+  }
+}
+
 export const register: Register = (on, options) => {
-  const t: Tower = { cwd: '', shown: '', hasLogged: new Set(), writing: Promise.resolve() }
+  const t: Tower = { cwd: '', shown: '', hasLogged: new Set(), writing: Promise.resolve(), live: [], askedAt: 0, story: { key: '', headlines: [], isAsking: false, nextAt: 0, failures: 0 } }
   const n = new Director()
   const band: Band = { box: bandBox(NaN) }
   // The config menu's choice is the default; /fables model overrides it.
@@ -230,7 +289,11 @@ export const register: Register = (on, options) => {
       description: 'Claude Fables: turn the cartoons above the prompt on or off, pick a style, or pick the model that writes them',
       argumentHint: '[on|off|style [name|off]|model [sonnet|haiku]|tower [on|off]]',
     })
-    $.clock.every(1000, () => void n.tick(host($, band)))
+    // A session's own cartoon is written only while it is on screen with no other agent live:
+    // with others, the combined story takes the band; off screen, nobody would see it.
+    $.clock.every(1000, async () => {
+      if (isOnScreen(t, await $.clock.now()) && !hasOthers(t)) void n.tick(host($, band))
+    })
     const isTowerOn = (await $.store.get(STORE_TOWER)) !== false
     await update($, towerOn, () => isTowerOn)
     t.cwd = await $.session.cwd()
@@ -241,6 +304,8 @@ export const register: Register = (on, options) => {
       t.tracker?.alive(await $.clock.now())
       await publish($, t)
       await scan($, t)
+      await update($, pulse, () => t.tracker?.beacon.aliveAt ?? 0)
+      await narrateEnsemble($, t, n.model)
     })
     return next(e)
   })
@@ -352,7 +417,22 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    const rows = (await read($, towerOn)) ? await read($, tower) : []
+    if (e.surface === 'desktop') t.askedAt = await $.clock.now()
+    // Read only to be drawn again every heartbeat: that keeps the app asking while this pane is on screen.
+    await read($, pulse)
+    const isTowerOn = await read($, towerOn)
+    const story = isTowerOn && e.surface === 'desktop' && hasOthers(t) ? await read($, ensemble) : null
+    if (story) {
+      const liveIds = new Set(t.live.map(b => b.sessionId))
+      const shown = { ...story, cast: story.cast.filter(c => liveIds.has(c.id)) }
+      if (shown.cast.length > 0) {
+        const { Svg } = $.ui.resolve(e)
+        band.box = bandBox(e.props.bodyColumns)
+        const look = await read($, style)
+        return <Svg source={ensembleToSvg(shown, { ...band.box, look })} alt={shown.headline} width={band.box.width} height={band.box.height} isInteractive />
+      }
+    }
+    const rows = isTowerOn ? await read($, tower) : []
     const list = rows.length > 0 ? towerTree($, e, rows) : null
     const current = e.surface === 'desktop' && (await read($, enabled)) ? await read($, scene) : null
     if (!current) return list ?? next(e)
