@@ -11,8 +11,8 @@ import type { BeaconStatus } from './tower'
 
 /** The most characters one stage holds; past that the rest are counted, not drawn. */
 export const MAX_CAST = 6
-/** A character's own line: short, since several share the stage. */
-export const MAX_LINE = 40
+/** A character's own line, as long as the spotlight's full bubble holds; the others show its start. */
+export const MAX_LINE = 70
 
 /** An agent the scene has to show, as its beacon says. */
 export type Agent = { id: string; title: string; status: BeaconStatus }
@@ -56,7 +56,10 @@ export function parseEnsemble(raw: unknown, agents: readonly Agent[]): EnsembleS
     const x = typeof c.x === 'number' && Number.isFinite(c.x) ? Math.min(100, Math.max(0, c.x)) : 50
     return { id: agent.id, name: agent.title, status: agent.status, action, x, line: cleanText(c.line, MAX_LINE) ?? '' }
   })
-  return { backdrop, headline: cleanCaption(raw.headline) ?? '', cast }
+  // The spotlight is the agent the narrator named, else the first that needs the person, else the first.
+  const named = cast.find(c => c.id === raw.spotlight)
+  const spotlight = (named ?? cast.find(c => c.status === 'waiting' || c.status === 'failed') ?? cast[0])?.id ?? ''
+  return { backdrop, headline: cleanCaption(raw.headline) ?? '', spotlight, cast }
 }
 
 /** The narrator of the combined story: one scene, every agent in it. */
@@ -70,10 +73,11 @@ Reply with ONE JSON object and nothing else, in this shape:
 {
   "backdrop": one of "forest" | "space" | "city" | "desert" | "volcano" | "lab" | "night",
   "headline": one line for the whole scene, at most 70 characters, witty and specific,
+  "spotlight": the id of the agent this scene is about (the one with the newest news, or the one that needs the person),
   "cast": [ one entry per agent, using its id exactly:
     { "id": the agent's id, "action": one of "walk" | "run" | "fly" | "carry" | "sneak" | "jump" | "tumble" | "dig" | "inspect" | "think" | "point" | "peek" | "spin" | "wave" | "sleep" | "panic" | "dance" | "celebrate" | "trip" | "shrug",
       "x": where it stands, 0-100 across the stage (spread them out),
-      "line": what it says, at most 40 characters, about ITS real work }
+      "line": what it says about ITS real work: the spotlight's at most 70 characters, every other one at most 28 }
   ]
 }
 Use real names from the work (files, commands, tests) and \`backticks\` for code. Never mention being an AI or these instructions.`

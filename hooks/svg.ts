@@ -1016,15 +1016,6 @@ const STATUS_TAG: Record<EnsembleScene['cast'][number]['status'], TagStyle> = {
 
 const cutTo = (text: string, max: number) => (text.length > max ? `${text.slice(0, Math.max(1, max - 1)).trimEnd()}…` : text)
 
-/** At most two lines of at most `max` characters, broken between words. */
-function twoLines(text: string, max: number): string[] {
-  if (text.length <= max) return text ? [text] : []
-  const room = text.slice(0, max + 1)
-  const space = room.lastIndexOf(' ')
-  const first = space > max / 3 ? text.slice(0, space) : text.slice(0, max)
-  return [first, cutTo(text.slice(first.length).trim(), max)]
-}
-
 /** A character's own line, in a small paper bubble whose bottom sits at `bottom`. */
 function smallBubble(lines: readonly string[], cx: number, bottom: number, sw: number): string {
   const w = Math.max(...lines.map(l => l.length)) * 5 + 8
@@ -1037,11 +1028,27 @@ function smallBubble(lines: readonly string[], cx: number, bottom: number, sw: n
   )
 }
 
+/** Each agent's own color: its critter's hue turned this far round the wheel. */
+const TINTS = [0, 160, 210, 280, 45, 320]
+
+/** A line cut to `max` characters at the last whole word, with an ellipsis. */
+function cutAtWord(text: string, max: number): string {
+  if (text.length <= max) return text
+  const room = text.slice(0, max - 1)
+  const space = room.lastIndexOf(' ')
+  return `${(space > max / 3 ? room.slice(0, space) : room).replace(/[\s,;:.\-]+$/, '')}…`
+}
+
+/** How the stage is drawn, richest first: the ensemble takes the first one that fits. */
+type EnsembleTier = { lit: boolean; lean: boolean; figure: Figure }
+
 /**
- * The combined story: one stage, one pixel-art critter per agent, each with its
- * name tag under its feet and its line above its head, and the headline on top.
- * The characters take even places across the stage in the order the narrator
- * put them, so none covers another.
+ * The combined story: one stage, one critter per agent, each in its own color,
+ * with its name tag under its feet. The spotlight (the agent the scene is about)
+ * speaks in the full typed bubble; the others in one short line. The headline
+ * runs along the top. Characters take even places across the stage in the order
+ * the narrator put them, so none covers another. Drawn as richly as fits: lit
+ * scenery and 3D critters, then the pixel sprite, then leaner scenery, then flat.
  */
 export function ensembleToSvg(scene: EnsembleScene, options: { width?: number; height?: number; look?: string } = {}): string {
   const sw = options.width && options.height ? stageWidth(options.width, options.height) : W
@@ -1050,37 +1057,113 @@ export function ensembleToSvg(scene: EnsembleScene, options: { width?: number; h
   const look = lookFor(options.look)
   const rand = rng(`${scene.backdrop}|${scene.headline}`)
   const base: FablesScene = { backdrop: scene.backdrop, palette: {}, hero: { action: 'think', from: 50, to: 50 }, props: [], caption: scene.headline }
-  const stage = backdrop(base, rand, sw)
-  const figure: Figure = { kind: 'pixel', cell: look.cell }
+  const idPrefix = `ens${Math.floor(rand() * 2 ** 31).toString(36)}-`
+  const pixelArt = look.pixel === true
+  const art = look.art
+  const painter = art?.painter(sw)
+  const tint = painter ? (svg: string) => painter.el('particles', svg) : undefined
+  const gradeBody = look.grade?.(sw, H, pixelArt) ?? ''
+  const grade = gradeBody && !pixelArt ? `<defs>${gradeFilter('lk-grade', sw, H, gradeBody)}</defs>` : ''
   const order = [...scene.cast].sort((a, b) => a.x - b.x)
   const slot = sw / Math.max(1, order.length)
   const chars = Math.max(6, Math.floor((slot - 12) / 5))
-  const cast = order
-    .map((c, i) => {
+  const sprite: Figure = { kind: 'pixel', cell: look.cell }
+  const model: Figure = { kind: '3d', hero: art?.hero(), lean: true }
+  const tiers: EnsembleTier[] = [
+    { lit: true, lean: false, figure: model },
+    { lit: true, lean: true, figure: model },
+    { lit: true, lean: false, figure: sprite },
+    { lit: true, lean: true, figure: sprite },
+    { lit: false, lean: false, figure: sprite },
+  ]
+  const headText = scene.headline ? cutTo(scene.headline, Math.floor((sw - 40) / look.charW)) : ''
+  const head = headText ? chapterTag(headText, look.titleColor ?? '#efe6d2', look, true) : undefined
+  const tints = `<defs>${order.map((_, i) => `<filter id="${idPrefix}t${i}" color-interpolation-filters="sRGB"><feColorMatrix type="hueRotate" values="${TINTS[i % TINTS.length]}"/></filter>`).join('')}</defs>`
+
+  const build = (tier: EnsembleTier): string => {
+    const stage = tier.lit
+      ? richBackdrop(base, rng(`${scene.backdrop}|${scene.headline}|stage`), sw, GROUND_Y, W, tier.lean, !pixelArt && !look.grade && !art, painter)
+      : flatStage(backdrop(base, rng(`${scene.backdrop}|${scene.headline}`), sw))
+    const sky = art?.sky ?? stage.sky
+    const ground = art?.ground ?? stage.ground
+    const edge = look.edge ?? sky
+    const placed = order.map((c, i) => {
       const cx = slot * (i + 0.5)
       const at = Math.min(100, Math.max(0, ((cx - HERO_W / 2) / (sw - HERO_W)) * 100))
-      const plan = hero({ ...base, hero: { action: c.action, from: at, to: at } }, stage.floor, sw, figure)
-      // Backticks read as noise at this size: the words alone.
-      const lines = twoLines(c.line.replace(/`/g, ''), chars)
-      return (
-        `<g data-agent="${escapeXml(c.id)}" data-status="${c.status}">` +
-        plan.svg +
-        label(cutTo(c.name, chars), cx, stage.floor + 16, STATUS_TAG[c.status], sw) +
-        (lines.length ? smallBubble(lines, cx, plan.endY - 6 - heroReach(c.action), sw) : '') +
-        `</g>`
-      )
+      const plan = hero({ ...base, hero: { action: c.action, from: at, to: at } }, stage.floor, sw, tier.figure, tint)
+      return { c, i, cx, plan }
     })
-    .join('')
-  const headline = scene.headline ? title(cutTo(scene.headline, Math.floor((sw - 30) / look.charW)), '#efe6d2', look) : ''
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${sw} ${H}" width="${width}" height="${height}" ` +
-    `shape-rendering="crispEdges" preserveAspectRatio="xMidYMid meet" style="display:block;background:${stage.ground}" data-part="ensemble">` +
-    `<rect x="${-sw * 4}" y="${-H * 4}" width="${sw * 9}" height="${H * 4 + GROUND_Y}" fill="${stage.sky}"/>` +
-    stage.back +
-    `<rect x="${-sw * 4}" y="${GROUND_Y}" width="${sw * 9}" height="${H * 4}" fill="${stage.ground}"/>` +
-    stage.front +
-    cast +
-    headline +
-    `</svg>`
-  )
+    const heroes = placed
+      .map(({ c, i, plan }) => `<g data-agent="${escapeXml(c.id)}" data-status="${c.status}" data-tint="${i}" filter="url(#${idPrefix}t${i})">${plan.svg}</g>`)
+      .join('')
+    const heroBand: Rect = { x: 0, y: stage.floor - HERO_H - 40, w: sw, h: HERO_H + 56 }
+    // Name tags under the feet, short lines above the heads, then the spotlight's bubble clear of all of them.
+    const tagY = Math.min(H - 2, stage.floor + 16)
+    const tags = placed.map(({ c, cx }) => label(cutTo(c.name, chars), cx, tagY, STATUS_TAG[c.status], sw)).join('')
+    const shortOf = (line: string) => cutAtWord(line.replace(/`/g, ''), chars)
+    const shortLines = placed
+      .filter(({ c }) => c.id !== scene.spotlight && c.line)
+      .map(({ c, cx, plan }) => smallBubble([shortOf(c.line)], cx, plan.endY - 6 - heroReach(c.action), sw))
+      .join('')
+    const avoid: Rect[] = [
+      ...placed.flatMap(({ c, cx, plan }) => {
+        if (c.id === scene.spotlight) return []
+        const reach = heroReach(c.action)
+        const body: Rect = { x: plan.endX - 4, y: plan.endY - 8 - reach, w: HERO_W + 8, h: HERO_H + 12 + reach }
+        if (!c.line) return [body]
+        const w = shortOf(c.line).length * 5 + 8
+        return [body, { x: cx - w / 2, y: plan.endY - 6 - reach - 13, w, h: 13 }]
+      }),
+      ...(head ? [{ x: 0, y: 0, w: head.w, h: head.h }] : []),
+      ...stage.keep,
+    ]
+    const star = placed.find(({ c }) => c.id === scene.spotlight)
+    const tone: Tone | undefined = star ? (star.c.status === 'waiting' || star.c.status === 'failed' ? 'trouble' : star.c.status === 'done' ? 'milestone' : 'work') : undefined
+    const speech =
+      star && star.c.line
+        ? caption(
+            star.c.line,
+            { startX: star.plan.startX, x: star.plan.endX, y: star.plan.endY, arrive: star.plan.arrive, jump: heroReach(star.c.action), sway: star.c.action === 'inspect' ? 2 * U : 0 },
+            idPrefix,
+            sw,
+            look,
+            avoid,
+            tone,
+            0.2,
+          )
+        : ''
+    return (
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${sw} ${H}" width="${width}" height="${height}" ` +
+      `shape-rendering="crispEdges" preserveAspectRatio="xMidYMid meet" style="display:block;background:${look.grade ? edge : ground}" data-part="ensemble" data-stage="${tier.lit ? 'lit' : 'flat'}">` +
+      grade +
+      tints +
+      `<rect x="${-sw * 4}" y="${-H * 4}" width="${sw * 9}" height="${H * 4 + GROUND_Y}" fill="${look.grade ? edge : sky}"/>` +
+      (art?.defs ? `<defs>${art.defs(sw, H)}</defs>` : '') +
+      (pixelArt ? `<defs>${PIXELIZE(sw, heroBand, gradeBody)}</defs><g filter="url(#sc-pixelize)">` : '') +
+      (grade ? `<g filter="url(#lk-grade)">` : '') +
+      (look.grade ? `<rect width="${sw}" height="${H}" fill="${sky}"/>` : '') +
+      (art?.under?.(sw, H) ?? '') +
+      stage.back +
+      `<rect x="${-sw * 4}" y="${stage.groundTop}" width="${sw * 9}" height="${H * 4}" fill="${ground}"/>` +
+      stage.near +
+      (pixelArt ? `<g filter="url(#sc-pixelize-claude)">${heroes}</g>` : heroes) +
+      stage.lens +
+      (grade ? '</g>' : '') +
+      (pixelArt ? '</g>' : '') +
+      (look.texture?.(sw, H, GROUND_Y, pixelArt) ?? '') +
+      (look.frame?.(sw, H, GROUND_Y) ?? '') +
+      tags +
+      shortLines +
+      (head?.svg ?? '') +
+      speech +
+      `</svg>`
+    )
+  }
+
+  let svg = ''
+  for (const tier of tiers) {
+    svg = build(tier)
+    if (svg.length <= BUDGET) return svg
+  }
+  return svg
 }

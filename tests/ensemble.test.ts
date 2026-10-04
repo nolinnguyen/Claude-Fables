@@ -73,6 +73,40 @@ describe('the ensemble scene', () => {
     expect(svg.length).toBeLessThan(60_000)
   })
 
+  test('the spotlight goes to the agent the narrator names, else to the first one that needs the person', () => {
+    const named = parseEnsemble({ backdrop: 'lab', headline: 'h', spotlight: 'rfq', cast: [] }, AGENTS)
+    expect(named?.spotlight).toBe('rfq')
+    const unknown = parseEnsemble({ backdrop: 'lab', headline: 'h', spotlight: 'ghost', cast: [] }, AGENTS)
+    expect(unknown?.spotlight).toBe('fq')
+    const calm = parseEnsemble({ backdrop: 'lab', headline: 'h', cast: [] }, [{ id: 'x', title: 'X', status: 'working' }, { id: 'y', title: 'Y', status: 'done' }])
+    expect(calm?.spotlight).toBe('x')
+  })
+
+  test('the stage looks its best that fits: lit scenery, each agent in its own color, the spotlight in the full bubble', () => {
+    const LOOKS = ['pixel', 'original', 'ukiyoe', 'blueprint', 'aero']
+    const BACKDROPS = ['forest', 'space', 'city', 'desert', 'volcano', 'lab', 'night']
+    for (const size of [2, 4, 6]) {
+      const agents = Array.from({ length: size }, (_, i) => ({ id: `a${i}`, title: `Agent number ${i}`, status: (['waiting', 'working', 'failed', 'done'] as const)[i % 4]! }))
+      for (const backdrop of BACKDROPS)
+        for (const look of LOOKS) {
+          const scene = parseEnsemble(
+            { backdrop, headline: 'Six critters and one long night of `npm test`', spotlight: 'a0', cast: agents.map((a, i) => ({ id: a.id, action: ['walk', 'dig', 'panic', 'celebrate'][i % 4], x: i * 20, line: `Agent ${i} is pricing drywall in takeoff.csv and failed twice` })) },
+            agents,
+          )!
+          const svg = ensembleToSvg(scene, { width: 1100, height: 192, look })
+          expect(svg.length).toBeLessThanOrEqual(126_000)
+          // Every agent has its own tint.
+          const tints = new Set([...svg.matchAll(/data-tint="([^"]+)"/g)].map(m => m[1]))
+          expect(tints.size).toBe(size)
+          // The spotlight speaks in the full, typed bubble.
+          expect(svg).toContain('data-part="speech"')
+        }
+    }
+    // With room to spare, the scenery is the lit one, not the flat fallback.
+    const two = parseEnsemble({ backdrop: 'forest', headline: 'h', cast: [] }, AGENTS.slice(0, 2))!
+    expect(ensembleToSvg(two, { width: 1100, height: 192 })).toContain('data-stage="lit"')
+  })
+
   test('an answer that is not a scene is no scene', () => {
     expect(parseEnsemble('just chatter', AGENTS)).toBe(null)
     expect(parseEnsemble({ backdrop: 'mars', cast: [] }, AGENTS)).toBe(null)

@@ -71,6 +71,8 @@ export type FablesTowerRow = {
 export type FablesEnsembleScene = {
   backdrop: FablesBackdrop
   headline: string
+  /** The agent the scene is about: it speaks in the full bubble, the others in short ones. */
+  spotlight: string
   cast: {
     id: string
     name: string
