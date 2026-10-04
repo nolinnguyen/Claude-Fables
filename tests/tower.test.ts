@@ -57,9 +57,18 @@ describe('the control tower', () => {
     t.turnEnd('answer', 14_000)
     expect(t.beacon.status).toBe('done')
 
+    // A permission prompt raised while a tool is starting: once the person approves and the tool returns, it works again.
+    t.prompt('render it', undefined, 20_000)
+    t.toolStart('Bash', 'ran shell: long build', 21_000)
+    t.notify('permission_prompt', 'Claude needs your permission to use Bash', 21_500)
+    expect(t.beacon.status).toBe('waiting')
+    t.toolEnd('Bash', 30_000)
+    expect(t.beacon).toMatchObject({ status: 'working', since: 30_000 })
+    t.turnEnd('answer', 31_000)
+
     // The app's "still waiting for your input" nudge to an idle session is not a question.
     t.notify('idle_prompt', 'Claude is waiting for your input', 75_000)
-    expect(t.beacon).toMatchObject({ status: 'done', since: 14_000 })
+    expect(t.beacon).toMatchObject({ status: 'done', since: 31_000 })
   })
 
   test('a row names the session and says how long it has been in its state', () => {

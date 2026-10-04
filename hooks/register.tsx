@@ -7,7 +7,7 @@ import type { FablesScene, FablesTowerRow } from '../types'
 
 import { summarizeTool } from './activity'
 import { H, MAX_SVG, resumeAt, sceneToSvg, speaksAfter, W } from './svg'
-import { type Beacon, rank, rowFor, Tracker } from './tower'
+import { type Beacon, rank, rowFor, STALE_MS, Tracker } from './tower'
 
 const scene = atom({ plugin: 'fables', key: 'scene' } as const, null)
 const enabled = atom({ plugin: 'fables', key: 'enabled' } as const, true)
@@ -111,7 +111,7 @@ async function draw($: EngineInterface, band: Band, next: FablesScene): Promise<
 }
 
 /** This session's beacon, and what the tower last listed. */
-type Tower = { tracker?: Tracker; shown: string; hasLogged: Set<string> }
+type Tower = { tracker?: Tracker; cwd: string; shown: string; hasLogged: Set<string>; writing: Promise<void> }
 
 /** Says once per session, in the transcript, why the tower cannot do its part. */
 function logOnce($: EngineInterface, t: Tower, what: string, err: unknown) {
@@ -120,10 +120,23 @@ function logOnce($: EngineInterface, t: Tower, what: string, err: unknown) {
   $.ui.log(`fables: the control tower could not ${what}: ${err instanceof Error ? err.message : String(err)}`)
 }
 
-async function publish($: EngineInterface, t: Tower) {
-  const b = t.tracker?.beacon
-  if (!b) return
-  await $.fs.write(`${TOWER_DIR}/${b.sessionId}.json`, JSON.stringify(b)).catch(err => logOnce($, t, "write this session's status", err))
+/**
+ * Writes this session's beacon. Writes go one at a time, in order, each with the
+ * beacon as it is when its turn comes, so the file always ends on the latest state.
+ */
+function publish($: EngineInterface, t: Tower): Promise<void> {
+  t.writing = t.writing.then(async () => {
+    const b = t.tracker?.beacon
+    if (!b) return
+    await $.fs.write(`${TOWER_DIR}/${b.sessionId}.json`, JSON.stringify(b)).catch(err => logOnce($, t, "write this session's status", err))
+  })
+  return t.writing
+}
+
+/** After /clear or a resume the session goes on under a new id: its beacon starts over under that one. */
+async function follow($: EngineInterface, t: Tower) {
+  const id = await $.session.id()
+  if (t.tracker && t.tracker.beacon.sessionId !== id) t.tracker = new Tracker(id, t.cwd, await $.clock.now())
 }
 
 /** Reads every session's beacon and lists the others; a file caught mid-write is read again next time. */
@@ -140,6 +153,8 @@ async function scan($: EngineInterface, t: Tower) {
   const beacons: Beacon[] = []
   for (const entry of entries) {
     if (entry.kind !== 'file' || !entry.name.endsWith('.json')) continue
+    // A beacon its session stopped refreshing is a session that is gone: not worth opening.
+    if (now - entry.mtimeMs > STALE_MS) continue
     try {
       beacons.push(JSON.parse(String(await $.fs.read(`${TOWER_DIR}/${entry.name}`))) as Beacon)
     } catch {
@@ -193,7 +208,7 @@ function towerLine(tool: string, input: Readonly<Record<string, unknown>>): stri
 }
 
 export const register: Register = (on, options) => {
-  const t: Tower = { shown: '', hasLogged: new Set() }
+  const t: Tower = { cwd: '', shown: '', hasLogged: new Set(), writing: Promise.resolve() }
   const n = new Director()
   const band: Band = { box: bandBox(NaN) }
   // The config menu's choice is the default; /fables model overrides it.
@@ -218,9 +233,11 @@ export const register: Register = (on, options) => {
     $.clock.every(1000, () => void n.tick(host($, band)))
     const isTowerOn = (await $.store.get(STORE_TOWER)) !== false
     await update($, towerOn, () => isTowerOn)
-    t.tracker = new Tracker(await $.session.id(), await $.session.cwd(), await $.clock.now())
+    t.cwd = await $.session.cwd()
+    t.tracker = new Tracker(await $.session.id(), t.cwd, await $.clock.now())
     await publish($, t)
     $.clock.every(TOWER_EVERY_MS, async () => {
+      await follow($, t)
       t.tracker?.alive(await $.clock.now())
       await publish($, t)
       await scan($, t)
@@ -277,6 +294,7 @@ export const register: Register = (on, options) => {
   })
 
   on('classic.UserPromptSubmit', async ($, e, next) => {
+    await follow($, t)
     t.tracker?.prompt(e.prompt, e.session_title, await $.clock.now())
     await publish($, t)
     return next(e)

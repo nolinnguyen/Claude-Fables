@@ -72,8 +72,9 @@ export class Tracker {
     this.set(ASKS_PERSON.has(tool) ? 'waiting' : 'working', now, line)
   }
 
-  toolEnd(tool: string, now: number) {
-    if (ASKS_PERSON.has(tool)) this.set('working', now)
+  /** A tool came back: whatever it waited on (a question, a permission prompt) has been answered. */
+  toolEnd(_tool: string, now: number) {
+    if (this.beacon.status === 'waiting') this.set('working', now)
   }
 
   /**
