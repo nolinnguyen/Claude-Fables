@@ -166,6 +166,12 @@ describe('the ensemble scene', () => {
     ])
   })
 
+  test('agents past what the stage holds are counted in a corner tag, not dropped silently', () => {
+    const scene = parseEnsemble({ backdrop: 'lab', headline: 'h', cast: [] }, AGENTS)!
+    expect(ensembleToSvg(scene, { width: 1100, height: 192, more: 3 })).toContain('>+3 more<')
+    expect(ensembleToSvg(scene, { width: 1100, height: 192 })).not.toContain(' more<')
+  })
+
   test('an answer that is not a scene is no scene', () => {
     expect(parseEnsemble('just chatter', AGENTS)).toBe(null)
     expect(parseEnsemble({ backdrop: 'mars', cast: [] }, AGENTS)).toBe(null)

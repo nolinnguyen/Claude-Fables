@@ -488,10 +488,10 @@ export const register: Register = (on, options) => {
           const enter = t.staged && t.staged.backdrop !== shown.backdrop ? ('fade' as const) : undefined
           t.staged = { sceneKey, at: now, enter, backdrop: shown.backdrop, drawKey: '', svg: '' }
         }
-        const drawKey = `${band.box.width}x${band.box.height}|${look}`
+        const drawKey = `${band.box.width}x${band.box.height}|${look}|${t.live.length}`
         if (t.staged.drawKey !== drawKey) {
           t.staged.drawKey = drawKey
-          t.staged.svg = ensembleToSvg(shown, { ...band.box, look, enter: t.staged.enter })
+          t.staged.svg = ensembleToSvg(shown, { ...band.box, look, enter: t.staged.enter, more: Math.max(0, t.live.length - shown.cast.length) })
         }
         // Every later drawing (the turn ending, a resize) carries on from the scene's own clock instead of starting over.
         const along = Math.floor((now - t.staged.at) / 100) / 10

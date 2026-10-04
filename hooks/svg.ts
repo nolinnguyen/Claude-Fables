@@ -1050,7 +1050,7 @@ type EnsembleTier = { lit: boolean; lean: boolean; figure: Figure }
  * the narrator put them, so none covers another. Drawn as richly as fits: lit
  * scenery and 3D critters, then the pixel sprite, then leaner scenery, then flat.
  */
-export function ensembleToSvg(scene: EnsembleScene, options: { width?: number; height?: number; look?: string; enter?: 'fade' } = {}): string {
+export function ensembleToSvg(scene: EnsembleScene, options: { width?: number; height?: number; look?: string; enter?: 'fade'; more?: number } = {}): string {
   const sw = options.width && options.height ? stageWidth(options.width, options.height) : W
   const width = options.width ?? sw
   const height = options.height ?? Math.round((width * H) / sw)
@@ -1174,6 +1174,8 @@ export function ensembleToSvg(scene: EnsembleScene, options: { width?: number; h
       tags +
       shortLines +
       (head?.svg ?? '') +
+      // Agents past what the stage holds: counted, so none goes missing unnoticed.
+      (options.more ? label(`+${options.more} more`, sw - 34, 15, STATUS_TAG.working, sw) : '') +
       speech +
       // A new place fades in from the dark, as the single cartoon's does.
       (options.enter === 'fade'
