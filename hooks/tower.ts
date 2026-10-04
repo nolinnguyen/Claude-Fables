@@ -22,6 +22,8 @@ export type Beacon = {
   since: number
   /** The latest thing it did or said, one short line. */
   doing: string
+  /** The last few different things it did, oldest first: what the story is told from. Absent in beacons from before it was kept. */
+  recent?: string[]
   /** The last heartbeat: a beacon not refreshed for STALE_MS is a session that is gone. */
   aliveAt: number
 }
@@ -33,6 +35,8 @@ export const STALE_MS = 60_000
 const ASKS_PERSON = new Set(['AskUserQuestion', 'ExitPlanMode'])
 
 const MAX_DOING = 120
+/** How many of a session's latest doings its beacon keeps for the story. */
+const MAX_RECENT = 3
 const MAX_TITLE = 48
 
 const cut = (text: string, max: number) => {
@@ -47,12 +51,16 @@ export class Tracker {
 
   constructor(sessionId: string, cwd: string, now: number) {
     const project = cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd
-    this.beacon = { v: 1, sessionId, title: project, project, status: 'done', since: now, doing: '', aliveAt: now }
+    this.beacon = { v: 1, sessionId, title: project, project, status: 'done', since: now, doing: '', recent: [], aliveAt: now }
   }
 
   private set(status: BeaconStatus, now: number, doing?: string) {
     if (this.beacon.status !== status) this.beacon = { ...this.beacon, status, since: now }
-    if (doing !== undefined) this.beacon = { ...this.beacon, doing: cut(doing, MAX_DOING) }
+    if (doing !== undefined) {
+      const line = cut(doing, MAX_DOING)
+      const recent = this.beacon.recent ?? []
+      this.beacon = { ...this.beacon, doing: line, recent: recent.at(-1) === line ? recent : [...recent, line].slice(-MAX_RECENT) }
+    }
     this.beacon = { ...this.beacon, aliveAt: now }
   }
 

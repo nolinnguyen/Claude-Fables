@@ -71,6 +71,13 @@ describe('the control tower', () => {
     expect(t.beacon).toMatchObject({ status: 'done', since: 31_000 })
   })
 
+  test('a beacon keeps the last three different things its session did, for the story', () => {
+    const t = new Tracker('s2', 'C:/dev/rfq', 0)
+    t.prompt('price the drywall', 'RFQ board', 1)
+    for (const line of ['read takeoff.csv', 'read takeoff.csv', 'searched code for "unit price"', 'edited pricing.ts', 'ran shell: npm test']) t.toolStart('Bash', line, 2)
+    expect(t.beacon.recent).toEqual(['searched code for "unit price"', 'edited pricing.ts', 'ran shell: npm test'])
+  })
+
   test('a row names the session and says how long it has been in its state', () => {
     const asking = beacon('a', 'waiting', NOW - 4 * 60_000 - 59_000, { title: 'Fair Question', doing: 'asked: which thumbnail?' })
     expect(rowFor(asking, NOW)).toEqual({ status: 'waiting', label: 'Fair Question', state: 'waiting 4m', doing: 'asked: which thumbnail?' })
