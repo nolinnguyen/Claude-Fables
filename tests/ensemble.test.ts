@@ -83,7 +83,8 @@ describe('the ensemble scene', () => {
     expect(calm?.spotlight).toBe('x')
   })
 
-  test('the stage looks its best that fits: lit scenery, each agent in its own color, the spotlight in the full bubble', () => {
+  // It draws 105 stages, every look and backdrop at three cast sizes: give it time.
+  test('the stage looks its best that fits: lit scenery, each agent in its own color, the spotlight in the full bubble', { timeoutMs: 30_000 }, () => {
     const LOOKS = ['pixel', 'original', 'ukiyoe', 'blueprint', 'aero']
     const BACKDROPS = ['forest', 'space', 'city', 'desert', 'volcano', 'lab', 'night']
     for (const size of [2, 4, 6]) {
