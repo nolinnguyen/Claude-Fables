@@ -59,6 +59,14 @@ export type FablesScene = {
   enter?: 'fade'
 }
 
+/** One line of the control tower (hooks/tower.ts). */
+export type FablesTowerRow = {
+  status: 'working' | 'waiting' | 'failed' | 'done' | 'ended'
+  label: string
+  state: string
+  doing: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
     fables: {
@@ -66,6 +74,10 @@ declare module 'claude-code' {
       enabled: boolean
       /** The style scenes are drawn in (looks.ts): 'pixel' by default, 'original', or a gallery style. */
       style: string
+      /** The control tower's lines: the other live sessions on this machine, the ones that need the person first. */
+      tower: FablesTowerRow[]
+      /** Whether the band lists the other sessions. */
+      towerOn: boolean
     }
   }
 }

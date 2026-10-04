@@ -1,0 +1,71 @@
+import { describe, expect, test } from 'claude-code/testing'
+
+import { type Beacon, rank, rowFor, STALE_MS, Tracker } from '../hooks/tower'
+
+const NOW = 10_000_000
+
+/** A session's beacon as another session last wrote it, alive a second ago unless said otherwise. */
+const beacon = (sessionId: string, status: Beacon['status'], since: number, extra: Partial<Beacon> = {}): Beacon => ({
+  v: 1,
+  sessionId,
+  title: sessionId,
+  project: 'dev',
+  status,
+  since,
+  doing: '',
+  aliveAt: NOW - 1000,
+  ...extra,
+})
+
+describe('the control tower', () => {
+  test('lists the sessions that need you first, and leaves out this one, ended ones and silent ones', () => {
+    const rows = rank(
+      [
+        beacon('busy', 'working', NOW - 5_000),
+        beacon('finished', 'done', NOW - 60_000),
+        beacon('asking-long', 'waiting', NOW - 300_000),
+        beacon('me', 'waiting', NOW - 900_000),
+        beacon('broke', 'failed', NOW - 10_000),
+        beacon('asking-new', 'waiting', NOW - 20_000),
+        beacon('closed', 'ended', NOW - 1_000),
+        beacon('crashed', 'working', NOW - 50_000, { aliveAt: NOW - STALE_MS - 1 }),
+      ],
+      { now: NOW, self: 'me' },
+    )
+    expect(rows.map(r => r.sessionId)).toEqual(['asking-long', 'asking-new', 'broke', 'finished', 'busy'])
+  })
+
+  test('a session waits on the person while it asks, works again once answered, and fails when its turn errors', () => {
+    const t = new Tracker('s1', 'C:/dev/fair-question', 1000)
+    t.prompt('make the canada oil short', 'Fair Question', 2000)
+    expect(t.beacon).toMatchObject({ title: 'Fair Question', project: 'fair-question', status: 'working', since: 2000 })
+
+    t.toolStart('AskUserQuestion', 'asked: which thumbnail?', 3000)
+    expect(t.beacon).toMatchObject({ status: 'waiting', since: 3000, doing: 'asked: which thumbnail?' })
+    t.toolEnd('AskUserQuestion', 9000)
+    expect(t.beacon).toMatchObject({ status: 'working', since: 9000 })
+
+    t.notify('permission_prompt', 'Claude needs your permission to use Bash', 10_000)
+    expect(t.beacon).toMatchObject({ status: 'waiting', doing: 'Claude needs your permission to use Bash' })
+    t.toolStart('Bash', 'ran shell: render stills', 11_000)
+    expect(t.beacon).toMatchObject({ status: 'working', doing: 'ran shell: render stills' })
+
+    t.turnEnd('error', 12_000)
+    expect(t.beacon).toMatchObject({ status: 'failed', since: 12_000 })
+    t.prompt('try again', undefined, 13_000)
+    expect(t.beacon).toMatchObject({ status: 'working', title: 'Fair Question' })
+    t.turnEnd('answer', 14_000)
+    expect(t.beacon.status).toBe('done')
+
+    // The app's "still waiting for your input" nudge to an idle session is not a question.
+    t.notify('idle_prompt', 'Claude is waiting for your input', 75_000)
+    expect(t.beacon).toMatchObject({ status: 'done', since: 14_000 })
+  })
+
+  test('a row names the session and says how long it has been in its state', () => {
+    const asking = beacon('a', 'waiting', NOW - 4 * 60_000 - 59_000, { title: 'Fair Question', doing: 'asked: which thumbnail?' })
+    expect(rowFor(asking, NOW)).toEqual({ status: 'waiting', label: 'Fair Question', state: 'waiting 4m', doing: 'asked: which thumbnail?' })
+    expect(rowFor(beacon('b', 'working', NOW - 12_000), NOW).state).toBe('working 12s')
+    expect(rowFor(beacon('c', 'done', NOW - 3 * 3_600_000), NOW).state).toBe('done 3h')
+  })
+})

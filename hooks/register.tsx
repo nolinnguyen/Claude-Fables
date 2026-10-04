@@ -3,18 +3,38 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import { DEFAULT_MODEL, Director, findModel, type Host, MODEL_LABELS, NARRATOR_MODELS, type NarratorModel } from './director'
 import { DEFAULT_LOOK, findLook, LOOK_NAMES, LOOKS, lookFor } from './looks'
-import type { FablesScene } from '../types'
+import type { FablesScene, FablesTowerRow } from '../types'
 
+import { summarizeTool } from './activity'
 import { H, MAX_SVG, resumeAt, sceneToSvg, speaksAfter, W } from './svg'
+import { type Beacon, rank, rowFor, Tracker } from './tower'
 
 const scene = atom({ plugin: 'fables', key: 'scene' } as const, null)
 const enabled = atom({ plugin: 'fables', key: 'enabled' } as const, true)
 const style = atom({ plugin: 'fables', key: 'style' } as const, DEFAULT_LOOK)
+const tower = atom({ plugin: 'fables', key: 'tower' } as const, [] as FablesTowerRow[])
+const towerOn = atom({ plugin: 'fables', key: 'towerOn' } as const, true)
 
 const STORE_ENABLED = 'enabled'
 const STORE_PIXEL = 'pixelArt'
 const STORE_STYLE = 'style'
 const STORE_MODEL = 'model'
+const STORE_TOWER = 'tower'
+
+/**
+ * Where every session on this machine keeps its beacon, one file each. C:\dev
+ * is the same path on both of Nolin's machines; each machine has its own tower.
+ */
+const TOWER_DIR = 'C:/dev/.cache/fables-tower'
+/** How often a session refreshes its beacon and reads the others'. */
+const TOWER_EVERY_MS = 5000
+const TOWER_COLORS: Record<FablesTowerRow['status'], string> = {
+  waiting: 'yellow',
+  failed: 'red',
+  done: 'green',
+  working: 'cyan',
+  ended: 'gray',
+}
 /** Every scene is drawn with the 3D Claude, in the style the person chose (looks.ts). */
 const FIGURE = '3d'
 /** This plugin's own tools, if it ever registers any, are not part of the story. */
@@ -90,7 +110,90 @@ async function draw($: EngineInterface, band: Band, next: FablesScene): Promise<
   return band.drawn
 }
 
+/** This session's beacon, and what the tower last listed. */
+type Tower = { tracker?: Tracker; shown: string; hasLogged: Set<string> }
+
+/** Says once per session, in the transcript, why the tower cannot do its part. */
+function logOnce($: EngineInterface, t: Tower, what: string, err: unknown) {
+  if (t.hasLogged.has(what)) return
+  t.hasLogged.add(what)
+  $.ui.log(`fables: the control tower could not ${what}: ${err instanceof Error ? err.message : String(err)}`)
+}
+
+async function publish($: EngineInterface, t: Tower) {
+  const b = t.tracker?.beacon
+  if (!b) return
+  await $.fs.write(`${TOWER_DIR}/${b.sessionId}.json`, JSON.stringify(b)).catch(err => logOnce($, t, "write this session's status", err))
+}
+
+/** Reads every session's beacon and lists the others; a file caught mid-write is read again next time. */
+async function scan($: EngineInterface, t: Tower) {
+  const self = t.tracker?.beacon.sessionId
+  if (!self) return
+  const now = await $.clock.now()
+  let entries: Awaited<ReturnType<EngineInterface['fs']['list']>>
+  try {
+    entries = await $.fs.list(TOWER_DIR)
+  } catch (err) {
+    return logOnce($, t, 'read the other sessions', err)
+  }
+  const beacons: Beacon[] = []
+  for (const entry of entries) {
+    if (entry.kind !== 'file' || !entry.name.endsWith('.json')) continue
+    try {
+      beacons.push(JSON.parse(String(await $.fs.read(`${TOWER_DIR}/${entry.name}`))) as Beacon)
+    } catch {
+      // Mid-write by its session: the next scan reads it whole.
+    }
+  }
+  const rows = rank(beacons, { now, self }).map(b => rowFor(b, now))
+  const key = JSON.stringify(rows)
+  if (key === t.shown) return
+  t.shown = key
+  await update($, tower, () => rows)
+}
+
+/** The most sessions the band lists; the rest are counted in the header. */
+const MAX_ROWS = 8
+
+function towerTree($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], rows: readonly FablesTowerRow[]) {
+  const { Box, Text } = $.ui.resolve(e)
+  const needs = rows.filter(r => r.status === 'waiting' || r.status === 'failed').length
+  const working = rows.filter(r => r.status === 'working').length
+  const more = rows.length > MAX_ROWS ? ` · ${rows.length - MAX_ROWS} more` : ''
+  return (
+    <Box flexDirection="column" paddingX={1}>
+      <Text dimColor>{`other sessions: ${needs} need you · ${working} working${more}`}</Text>
+      {rows.slice(0, MAX_ROWS).map(r => (
+        <Box flexDirection="row" gap={1}>
+          <Text color={TOWER_COLORS[r.status]} bold>
+            ●
+          </Text>
+          <Text bold wrap="truncate">
+            {r.label}
+          </Text>
+          <Text color={TOWER_COLORS[r.status]}>{r.state}</Text>
+          <Text dimColor wrap="truncate">
+            {r.doing}
+          </Text>
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
+/** What the tower says a tool call is doing: a question to the person names the question. */
+function towerLine(tool: string, input: Readonly<Record<string, unknown>>): string {
+  if (tool === 'AskUserQuestion') {
+    const first = Array.isArray(input.questions) ? (input.questions[0] as { question?: unknown } | undefined) : undefined
+    return `asks you: ${typeof first?.question === 'string' ? first.question : 'a question'}`
+  }
+  if (tool === 'ExitPlanMode') return 'asks you to approve a plan'
+  return summarizeTool(tool, input)
+}
+
 export const register: Register = (on, options) => {
+  const t: Tower = { shown: '', hasLogged: new Set() }
   const n = new Director()
   const band: Band = { box: bandBox(NaN) }
   // The config menu's choice is the default; /fables model overrides it.
@@ -110,9 +213,18 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'fables',
       description: 'Claude Fables: turn the cartoons above the prompt on or off, pick a style, or pick the model that writes them',
-      argumentHint: '[on|off|style [name|off]|model [sonnet|haiku]]',
+      argumentHint: '[on|off|style [name|off]|model [sonnet|haiku]|tower [on|off]]',
     })
     $.clock.every(1000, () => void n.tick(host($, band)))
+    const isTowerOn = (await $.store.get(STORE_TOWER)) !== false
+    await update($, towerOn, () => isTowerOn)
+    t.tracker = new Tracker(await $.session.id(), await $.session.cwd(), await $.clock.now())
+    await publish($, t)
+    $.clock.every(TOWER_EVERY_MS, async () => {
+      t.tracker?.alive(await $.clock.now())
+      await publish($, t)
+      await scan($, t)
+    })
     return next(e)
   })
 
@@ -140,6 +252,13 @@ export const register: Register = (on, options) => {
       if (!look) return { text: `No style called "${want}". /fables style lists them.` }
       return chooseLook($, n, look.name)
     }
+    const tw = /^tower(?:\s+(on|off))?$/.exec(arg)
+    if (tw) {
+      const value = tw[1] === 'on' ? true : tw[1] === 'off' ? false : !(await read($, towerOn))
+      await $.store.set(STORE_TOWER, value)
+      await update($, towerOn, () => value)
+      return { text: value ? 'The control tower lists your other sessions above the prompt.' : 'The control tower is off.' }
+    }
     // Pixel art is a style now; the old switch still works, as a way to pick it or the smooth original.
     const px = /^pixel(?:\s+(on|off))?$/.exec(arg)
     if (px) return chooseLook($, n, px[1] === 'off' || (!px[1] && n.look === 'pixel') ? 'original' : 'pixel')
@@ -157,12 +276,32 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    t.tracker?.prompt(e.prompt, e.session_title, await $.clock.now())
+    await publish($, t)
+    return next(e)
+  })
+
+  on('classic.Notification', async ($, e, next) => {
+    t.tracker?.notify(e.notification_type, e.message, await $.clock.now())
+    await publish($, t)
+    return next(e)
+  })
+
   on('tool.call', async ($, e, next) => {
     const tool = String(e.tool)
     const isTold = e.agentId === undefined && !tool.startsWith(OWN_TOOLS)
-    if (isTold) n.tool(tool, e)
+    if (isTold) {
+      n.tool(tool, e)
+      t.tracker?.toolStart(tool, towerLine(tool, e), await $.clock.now())
+      await publish($, t)
+    }
     const ran = await next(e)
     if (isTold && (ran.deny !== undefined || ran.isError === true)) n.failed(tool, e)
+    if (isTold) {
+      t.tracker?.toolEnd(tool, await $.clock.now())
+      await publish($, t)
+    }
     return ran
   })
 
@@ -173,20 +312,33 @@ export const register: Register = (on, options) => {
         .join(' ')
         .trim()
       n.said(said)
+      t.tracker?.said(said, await $.clock.now())
     }
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) n.complete(e.reason)
+    if (e.agentId === undefined) {
+      n.complete(e.reason)
+      t.tracker?.turnEnd(e.reason, await $.clock.now())
+      await publish($, t)
+    }
+    return next(e)
+  })
+
+  on('session.end', async ($, e, next) => {
+    t.tracker?.end(await $.clock.now())
+    await publish($, t)
     return next(e)
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.surface !== 'desktop' || e.props.hasSurvey) return next(e)
-    const current = await read($, scene)
-    if (!current || !(await read($, enabled))) return next(e)
-    const { Svg } = $.ui.resolve(e)
+    if (e.props.hasSurvey) return next(e)
+    const rows = (await read($, towerOn)) ? await read($, tower) : []
+    const list = rows.length > 0 ? towerTree($, e, rows) : null
+    const current = e.surface === 'desktop' && (await read($, enabled)) ? await read($, scene) : null
+    if (!current) return list ?? next(e)
+    const { Box, Svg } = $.ui.resolve(e)
     // The interactive frame does not size itself from the markup (left alone it
     // is a 300x150 box), so give it the band's box; a new width draws anew.
     band.box = bandBox(e.props.bodyColumns)
@@ -195,7 +347,7 @@ export const register: Register = (on, options) => {
     // To a tenth of a second, so drawings in the same moment stay the same.
     const along = Math.floor(((await $.clock.now()) - at) / 100) / 10
     const resumed = resumeAt(base, along)
-    return (
+    const cartoon = (
       <Svg
         source={resumed.length <= MAX_SVG ? resumed : base}
         alt={current.caption}
@@ -203,6 +355,13 @@ export const register: Register = (on, options) => {
         height={height}
         isInteractive
       />
+    )
+    if (!list) return cartoon
+    return (
+      <Box flexDirection="column">
+        {cartoon}
+        {list}
+      </Box>
     )
   })
 }
