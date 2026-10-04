@@ -8,6 +8,7 @@ import type { FablesEnsembleScene, FablesScene, FablesTowerRow } from '../types'
 import { summarizeTool } from './activity'
 import { buildEnsemblePrompt, ENSEMBLE_SYSTEM, ensembleFromReply, IDLE_MS, MAX_CAST, parseEnsemble, shortIds } from './ensemble'
 import { backoffMs } from './narrator'
+import { pickRecap, readHistory, recapHtml, recordScene } from './recap'
 import { ensembleToSvg, H, MAX_SVG, resumeAt, sceneToSvg, speaksAfter, W } from './svg'
 import { type Beacon, claimLease, type Lease, rank, rowFor, STALE_MS, Tracker } from './tower'
 
@@ -35,6 +36,58 @@ const TOWER_EVERY_MS = 5000
 const LEASE_FILE = `${TOWER_DIR}/narrator.lease`
 /** The combined story's latest scene, which every session reads and the main pane draws. */
 const STORY_FILE = `${TOWER_DIR}/story.ensemble`
+/** The day's log of combined-story scenes, for /fables recap: one file per local date. */
+const historyFile = (day: string) => `${TOWER_DIR}/history-${day}.jsonl`
+/** The most scenes a recap plays: enough to tell the day, small enough to open fast. */
+const RECAP_SCENES = 40
+/** A recap page stays under this, inside the 4 MiB a file write takes. */
+const RECAP_MAX_CHARS = 3_800_000
+const pad = (v: number) => String(v).padStart(2, '0')
+const dayOf = (ms: number) => {
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+const timeOf = (ms: number) => {
+  const d = new Date(ms)
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** Adds a scene to the day's log; the narrator alone writes it, so one write never races another. */
+async function logScene($: EngineInterface, t: Tower, at: number, scene: FablesEnsembleScene) {
+  const file = historyFile(dayOf(at))
+  const before = await $.fs.read(file).then(String, () => '')
+  await $.fs.write(file, recordScene(before, { at, scene })).catch(err => logOnce($, t, "log the story for today's recap", err))
+}
+
+/** Writes the day's recap page and says where it is. */
+async function writeRecap($: EngineInterface, day: string, look: string): Promise<string> {
+  let log: string
+  try {
+    log = String(await $.fs.read(historyFile(day)))
+  } catch {
+    return `No combined story was logged on ${day}. The narrator logs scenes while two or more agents are running.`
+  }
+  const entries = readHistory(log)
+  // Each scene is up to ~126 KB of drawing and a file write stops at 4 MiB: fewer scenes until the page fits.
+  let count = RECAP_SCENES
+  let picked = pickRecap(entries, count)
+  if (picked.length === 0) return `The log for ${day} has no readable scenes.`
+  const pageOf = (list: typeof picked) =>
+    recapHtml(
+      `Your agents, ${day}`,
+      list.map(e => ({ time: timeOf(e.at), headline: e.scene.headline.replace(/`/g, ''), svg: ensembleToSvg(e.scene, { width: 1100, height: 192, look }) })),
+    )
+  let page = pageOf(picked)
+  while (page.length > RECAP_MAX_CHARS && count > 2) {
+    count = Math.max(2, Math.floor(count * 0.75))
+    picked = pickRecap(entries, count)
+    page = pageOf(picked)
+  }
+  const file = `${TOWER_DIR}/recap-${day}.html`
+  await $.fs.write(file, page)
+  const items = picked
+  return `Recap of ${day}: ${items.length} scenes, ${timeOf(picked[0]!.at)} to ${timeOf(picked.at(-1)!.at)}. Open ${file.replace(/\//g, '\\')} in a browser.`
+}
 /** The combined story is asked for at most this often, and only when an agent's news changed. */
 const ENSEMBLE_GAP_MS = 8000
 /** How many headlines the combined story remembers, for continuity. */
@@ -308,6 +361,7 @@ async function narrateEnsemble($: EngineInterface, t: Tower, model: NarratorMode
       const text = JSON.stringify({ scene: next, key, headlines: t.story.headlines })
       t.story.read = text
       await $.fs.write(STORY_FILE, text).catch(err => logOnce($, t, 'share the combined story', err))
+      await logScene($, t, now, next)
       await update($, ensemble, () => next)
     } else t.story.failures++
   } catch (err) {
@@ -340,7 +394,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'fables',
       description: 'Claude Fables: turn the cartoons above the prompt on or off, pick a style, or pick the model that writes them',
-      argumentHint: '[on|off|style [name|off]|model [sonnet|haiku]|tower [on|off]]',
+      argumentHint: '[on|off|style [name|off]|model [sonnet|haiku]|tower [on|off]|recap [YYYY-MM-DD]]',
     })
     // A session's own cartoon is written only while the band would show it: with other agents
     // live (and the tower on), the combined story takes the band instead.
@@ -389,6 +443,8 @@ export const register: Register = (on, options) => {
       if (!look) return { text: `No style called "${want}". /fables style lists them.` }
       return chooseLook($, n, look.name)
     }
+    const rc = /^recap(?:\s+(\d{4}-\d{2}-\d{2}))?$/.exec(arg)
+    if (rc) return { text: await writeRecap($, rc[1] ?? dayOf(await $.clock.now()), await read($, style)) }
     const tw = /^tower(?:\s+(on|off))?$/.exec(arg)
     if (tw) {
       const value = tw[1] === 'on' ? true : tw[1] === 'off' ? false : !(await read($, towerOn))
