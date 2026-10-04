@@ -130,6 +130,26 @@ describe('the ensemble scene', () => {
     expect(Number(to)).toBeGreaterThan(Number(from) + 100)
   })
 
+  test('a scene in a new place fades in; one in the same place carries straight on', () => {
+    const scene = parseEnsemble({ backdrop: 'volcano', headline: 'h', cast: [] }, AGENTS)!
+    const fading = ensembleToSvg(scene, { width: 1100, height: 192, enter: 'fade' })
+    const plain = ensembleToSvg(scene, { width: 1100, height: 192 })
+    expect(fading).toContain('data-part="entrance"')
+    expect(plain).not.toContain('data-part="entrance"')
+  })
+
+  test('an agent done and left a while is told as idle, so its critter dozes; a fresh one is not', () => {
+    const prompt = buildEnsemblePrompt(
+      [
+        { id: 'old', title: 'Money Lane', status: 'done', isIdle: true },
+        { id: 'new', title: 'RFQ board', status: 'done' },
+      ],
+      [],
+    )
+    expect(prompt).toContain('id "old" (Money Lane): done a while ago, untouched since (asleep)')
+    expect(prompt).toContain('id "new" (RFQ board): done, ready for the person to look')
+  })
+
   test('an answer that is not a scene is no scene', () => {
     expect(parseEnsemble('just chatter', AGENTS)).toBe(null)
     expect(parseEnsemble({ backdrop: 'mars', cast: [] }, AGENTS)).toBe(null)

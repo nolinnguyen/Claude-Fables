@@ -83,12 +83,16 @@ Reply with ONE JSON object and nothing else, in this shape:
       "line": what it says about ITS real work: the spotlight's at most 70 characters, every other one at most 28,
       "toward"?: another agent's id, when this critter goes over to it: to help one that FAILED, cheer one that finished, ask, or hand something over }
 Make the critters interact when their work touches: at most one or two go "toward" another in a scene.
+An agent told as asleep naps (action "sleep") off to the side unless its news changes.
   ]
 }
 Use real names from the work (files, commands, tests) and \`backticks\` for code. Never mention being an AI or these instructions.`
 
 /** An agent as the narrator hears it: its beacon's name, status, what it was asked for and its latest doings. */
-export type AgentNews = Agent & { ask?: string; recent?: readonly string[] }
+export type AgentNews = Agent & { ask?: string; recent?: readonly string[]; isIdle?: boolean }
+
+/** A finished agent left untouched this long dozes on stage. */
+export const IDLE_MS = 10 * 60_000
 
 const STANDING: Record<BeaconStatus, string> = {
   waiting: 'WAITING ON THE PERSON',
@@ -103,7 +107,7 @@ export function buildEnsemblePrompt(agents: readonly AgentNews[], story: readonl
     .slice(0, MAX_CAST)
     .map(
       a =>
-        `- id "${a.id}" (${a.title}): ${STANDING[a.status]}` +
+        `- id "${a.id}" (${a.title}): ${a.status === 'done' && a.isIdle ? 'done a while ago, untouched since (asleep)' : STANDING[a.status]}` +
         (a.ask ? `\n  asked for: "${a.ask}"` : '') +
         (a.recent?.length ? `\n  latest: ${a.recent.join(' | ')}` : ''),
     )

@@ -6,7 +6,7 @@ import { DEFAULT_LOOK, findLook, LOOK_NAMES, LOOKS, lookFor } from './looks'
 import type { FablesEnsembleScene, FablesScene, FablesTowerRow } from '../types'
 
 import { summarizeTool } from './activity'
-import { buildEnsemblePrompt, ENSEMBLE_SYSTEM, ensembleFromReply, MAX_CAST } from './ensemble'
+import { buildEnsemblePrompt, ENSEMBLE_SYSTEM, ensembleFromReply, IDLE_MS, MAX_CAST } from './ensemble'
 import { backoffMs } from './narrator'
 import { ensembleToSvg, H, MAX_SVG, resumeAt, sceneToSvg, speaksAfter, W } from './svg'
 import { type Beacon, claimLease, type Lease, rank, rowFor, STALE_MS, Tracker } from './tower'
@@ -135,6 +135,8 @@ type Tower = {
   /** Mirrors of the switches, for the timers: Fables on, and the other sessions shown. */
   isOn: boolean
   isTowerOn: boolean
+  /** The combined-story scene on the band: when it went up, whether it fades in, and its drawing for the band's box and look. */
+  staged?: { sceneKey: string; at: number; enter?: 'fade'; backdrop: string; drawKey: string; svg: string }
   /** The combined story: the news it was last written from, its headlines, its file as last read, and its narrator's pace. */
   story: { key: string; headlines: string[]; read: string; isAsking: boolean; nextAt: number; failures: number }
 }
@@ -286,8 +288,8 @@ async function narrateEnsemble($: EngineInterface, t: Tower, model: NarratorMode
   const now = await $.clock.now()
   if (!t.narrates || !isEnsemble(t)) return
   if (t.story.isAsking || now < t.story.nextAt) return
-  const agents = t.live.slice(0, MAX_CAST).map(b => ({ id: b.sessionId, title: b.title, status: b.status, ask: b.ask, recent: b.recent }))
-  const key = JSON.stringify(agents.map(a => [a.id, a.status, a.ask, a.recent]))
+  const agents = t.live.slice(0, MAX_CAST).map(b => ({ id: b.sessionId, title: b.title, status: b.status, ask: b.ask, recent: b.recent, isIdle: b.status === 'done' && now - b.since > IDLE_MS }))
+  const key = JSON.stringify(agents.map(a => [a.id, a.status, a.ask, a.recent, a.isIdle]))
   if (key === t.story.key) return
   t.story.isAsking = true
   try {
@@ -476,7 +478,22 @@ export const register: Register = (on, options) => {
         const { Svg } = $.ui.resolve(e)
         band.box = bandBox(e.props.bodyColumns)
         const look = await read($, style)
-        return <Svg source={ensembleToSvg(shown, { ...band.box, look })} alt={shown.headline} width={band.box.width} height={band.box.height} isInteractive />
+        const now = await $.clock.now()
+        // A scene goes up once: its clock starts, and it fades in when it opens on a new place.
+        const sceneKey = JSON.stringify(shown)
+        if (t.staged?.sceneKey !== sceneKey) {
+          const enter = t.staged && t.staged.backdrop !== shown.backdrop ? ('fade' as const) : undefined
+          t.staged = { sceneKey, at: now, enter, backdrop: shown.backdrop, drawKey: '', svg: '' }
+        }
+        const drawKey = `${band.box.width}x${band.box.height}|${look}`
+        if (t.staged.drawKey !== drawKey) {
+          t.staged.drawKey = drawKey
+          t.staged.svg = ensembleToSvg(shown, { ...band.box, look, enter: t.staged.enter })
+        }
+        // Every later drawing (the turn ending, a resize) carries on from the scene's own clock instead of starting over.
+        const along = Math.floor((now - t.staged.at) / 100) / 10
+        const resumed = resumeAt(t.staged.svg, along)
+        return <Svg source={resumed.length <= MAX_SVG ? resumed : t.staged.svg} alt={shown.headline} width={band.box.width} height={band.box.height} isInteractive />
       }
     }
     const rows = isTowerOn ? await read($, tower) : []
