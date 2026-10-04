@@ -173,6 +173,50 @@ describe('the ensemble scene', () => {
     expect(ensembleToSvg(scene, { width: 1100, height: 192 })).not.toContain(' more<')
   })
 
+  test('walks and tags keep their places: tags never overlap or leave the stage, walkers never back away, two heading for each other meet once', () => {
+    const tagsOf = (svg: string, sw: number) => {
+      const rects = [...svg.matchAll(/<rect x="(-?[\d.]+)" y="[\d.]+" width="(\d+)" height="11"/g)].map(m => ({ x: Number(m[1]), w: Number(m[2]) }))
+      for (const r of rects) {
+        expect(r.x).toBeGreaterThanOrEqual(0)
+        expect(r.x + r.w).toBeLessThanOrEqual(sw)
+      }
+      const sorted = [...rects].sort((a, b) => a.x - b.x)
+      for (let i = 1; i < sorted.length; i++) expect(sorted[i]!.x).toBeGreaterThanOrEqual(sorted[i - 1]!.x + sorted[i - 1]!.w)
+    }
+    const moveOf = (svg: string, id: string) => {
+      const group = new RegExp(`<g data-agent="${id}"[^>]*>([\\s\\S]*?)</g><g data-agent=|<g data-agent="${id}"[^>]*>([\\s\\S]*)$`).exec(svg)
+      const body = group?.[1] ?? group?.[2] ?? ''
+      const m = /type="translate" values="(-?[\d.]+) [\d.]+;(-?[\d.]+) [\d.]+"/.exec(body)
+      const at = /<g transform="translate\((-?[\d.]+) /.exec(body)
+      return m ? { from: Number(m[1]), to: Number(m[2]) } : { from: Number(at?.[1]), to: Number(at?.[1]) }
+    }
+    const long = [
+      { id: 'a', title: 'Reddit mod exploration', status: 'working' as const },
+      { id: 'b', title: 'Fair Question renders', status: 'waiting' as const },
+      { id: 'c', title: 'Job Costing reconcile', status: 'failed' as const },
+    ]
+    for (const [w, h] of [[600, 192], [733, 192], [1000, 192], [1100, 192]] as const) {
+      const sw = Math.round(Math.min(1600, Math.max(320, (w * 128) / h)))
+      const scene = parseEnsemble({ backdrop: 'lab', headline: 'h', cast: [{ id: 'a', action: 'walk', x: 0, line: 'x', toward: 'c' }, { id: 'b', action: 'wave', x: 50, line: 'y' }, { id: 'c', action: 'panic', x: 100, line: 'z' }] }, long)!
+      tagsOf(ensembleToSvg(scene, { width: w, height: h }), sw)
+    }
+    // On a narrow stage a walker going to its neighbour never walks the other way.
+    const six = Array.from({ length: 6 }, (_, i) => ({ id: `n${i}`, title: `N${i}`, status: 'working' as const }))
+    const narrow = parseEnsemble({ backdrop: 'lab', headline: 'h', cast: six.map((a, i) => ({ id: a.id, action: 'walk', x: i * 10, line: '', ...(i === 0 ? { toward: 'n1' } : i === 3 ? { toward: 'n2' } : {}) })) }, six)!
+    const svg = ensembleToSvg(narrow, { width: 480, height: 192 })
+    const n0 = moveOf(svg, 'n0')
+    const n3 = moveOf(svg, 'n3')
+    expect(n0.to).toBeGreaterThanOrEqual(n0.from)
+    expect(n3.to).toBeLessThanOrEqual(n3.from)
+    // Two heading for each other: the first walks over, the other stays to meet it.
+    const pair = parseEnsemble({ backdrop: 'lab', headline: 'h', cast: [{ id: 'a', action: 'walk', x: 0, line: '', toward: 'c' }, { id: 'b', action: 'wave', x: 50, line: '' }, { id: 'c', action: 'walk', x: 100, line: '', toward: 'a' }] }, long)!
+    const both = ensembleToSvg(pair, { width: 1100, height: 192 })
+    const a = moveOf(both, 'a')
+    const c = moveOf(both, 'c')
+    expect(a.to).toBeGreaterThan(a.from)
+    expect(c.to).toBe(c.from)
+  })
+
   test('an answer that is not a scene is no scene', () => {
     expect(parseEnsemble('just chatter', AGENTS)).toBe(null)
     expect(parseEnsemble({ backdrop: 'mars', cast: [] }, AGENTS)).toBe(null)

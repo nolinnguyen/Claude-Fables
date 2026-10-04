@@ -6,7 +6,7 @@ import { DEFAULT_LOOK, findLook, LOOK_NAMES, LOOKS, lookFor } from './looks'
 import type { FablesEnsembleScene, FablesScene, FablesTowerRow } from '../types'
 
 import { summarizeTool } from './activity'
-import { buildEnsemblePrompt, ENSEMBLE_SYSTEM, ensembleFromReply, IDLE_MS, MAX_CAST, shortIds } from './ensemble'
+import { buildEnsemblePrompt, ENSEMBLE_SYSTEM, ensembleFromReply, IDLE_MS, MAX_CAST, parseEnsemble, shortIds } from './ensemble'
 import { backoffMs } from './narrator'
 import { ensembleToSvg, H, MAX_SVG, resumeAt, sceneToSvg, speaksAfter, W } from './svg'
 import { type Beacon, claimLease, type Lease, rank, rowFor, STALE_MS, Tracker } from './tower'
@@ -235,7 +235,10 @@ async function followStory($: EngineInterface, t: Tower) {
     // Whoever narrates next carries the story on from here.
     t.story.key = saved.key
     t.story.headlines = saved.headlines
-    await update($, ensemble, () => saved.scene)
+    // A scene written by an older session lacks newer fields (the spotlight): it gets the same cleanup as a fresh one.
+    const cast = Array.isArray(saved.scene?.cast) ? saved.scene.cast : []
+    const scene = parseEnsemble(saved.scene, cast.map(c => ({ id: c.id, title: c.name, status: c.status })))
+    if (scene) await update($, ensemble, () => scene)
   } catch {
     // Mid-write: read whole next beat.
   }

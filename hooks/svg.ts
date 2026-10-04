@@ -1092,11 +1092,16 @@ export function ensembleToSvg(scene: EnsembleScene, options: { width?: number; h
     const pct = (cx: number) => Math.min(100, Math.max(0, ((cx - HERO_W / 2) / (sw - HERO_W)) * 100))
     const placed = order.map((c, i) => {
       const start = home.get(c.id)!
-      const target = c.toward === undefined ? undefined : home.get(c.toward)
+      // Two heading for each other meet once: the one further left walks over, the other waits for it.
+      const other = c.toward === undefined ? undefined : order.findIndex(o => o.id === c.toward)
+      const waits = other !== undefined && other >= 0 && order[other]!.toward === c.id && other < i
+      const target = c.toward === undefined || waits ? undefined : home.get(c.toward)
       // Going over to another agent: walk up beside it, on the near side, then do the scene's action there.
-      const stop = target === undefined ? start : target + (target > start ? -1 : 1) * (HERO_W + 8)
+      // One already beside it stays where it is, so nobody ever backs away from where it is going.
+      const beside = HERO_W + 8
+      const stop = target === undefined || Math.abs(target - start) <= beside ? start : target + (target > start ? -beside : beside)
       const travels = MOTION_TIMING[c.action].kind === 'travel'
-      const move = target === undefined || travels ? { action: c.action } : { action: 'walk' as const, then: c.action }
+      const move = stop === start || travels ? { action: c.action } : { action: 'walk' as const, then: c.action }
       const plan = hero({ ...base, hero: { ...move, from: pct(start), to: pct(stop) } }, stage.floor, sw, tier.figure, tint)
       return { c, i, cx: plan.endX + HERO_W / 2, plan }
     })
@@ -1107,14 +1112,26 @@ export function ensembleToSvg(scene: EnsembleScene, options: { width?: number; h
     // Name tags under the feet, short lines above the heads, then the spotlight's bubble clear of all of them.
     // Name tags under the feet, slid apart where two would touch (a walker stops beside another).
     const tagY = Math.min(H - 2, stage.floor + 16)
-    const tagged = placed
-      .map(({ c, cx }) => {
-        const text = cutTo(c.name, chars)
-        const w = text.length * 5 + 8
-        return { c, text, w, x: Math.min(sw - w - 2, Math.max(2, cx - w / 2)) }
-      })
-      .sort((a, b) => a.x - b.x)
-    for (let i = 1; i < tagged.length; i++) tagged[i]!.x = Math.max(tagged[i]!.x, tagged[i - 1]!.x + tagged[i - 1]!.w + 4)
+    // Pushed right where they touch, then back left from the stage's edge; names cut shorter until all fit.
+    const layTags = (most: number) => {
+      const row = placed
+        .map(({ c, cx }) => {
+          const text = cutTo(c.name, most)
+          const w = text.length * 5 + 8
+          return { c, text, w, x: Math.min(sw - w - 2, Math.max(2, cx - w / 2)) }
+        })
+        .sort((a, b) => a.x - b.x)
+      for (let i = 1; i < row.length; i++) row[i]!.x = Math.max(row[i]!.x, row[i - 1]!.x + row[i - 1]!.w + 4)
+      let edge = sw - 2
+      for (let i = row.length - 1; i >= 0; i--) {
+        row[i]!.x = Math.min(row[i]!.x, edge - row[i]!.w)
+        edge = row[i]!.x - 4
+      }
+      return row
+    }
+    let most = chars
+    let tagged = layTags(most)
+    while (most > 4 && tagged[0] && tagged[0].x < 2) tagged = layTags(--most)
     const tags = tagged.map(({ c, text, w, x }) => label(text, x + w / 2, tagY, STATUS_TAG[c.status], sw)).join('')
     // Short lines above the heads, each raised a row while it would cover one already placed.
     const shortOf = (line: string) => cutAtWord(line.replace(/`/g, ''), chars)
