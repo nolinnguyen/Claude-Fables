@@ -1076,7 +1076,8 @@ export function ensembleToSvg(scene: EnsembleScene, options: { width?: number; h
     { lit: true, lean: true, figure: sprite },
     { lit: false, lean: false, figure: sprite },
   ]
-  const headText = scene.headline ? cutTo(scene.headline, Math.floor((sw - 40) / look.charW)) : ''
+  // The headline's banner sets plain type: code marks would show as stray backticks.
+  const headText = scene.headline ? cutTo(scene.headline.replace(/`/g, ''), Math.floor((sw - 40) / look.charW)) : ''
   const head = headText ? chapterTag(headText, look.titleColor ?? '#efe6d2', look, true) : undefined
   const tints = `<defs>${order.map((_, i) => `<filter id="${idPrefix}t${i}" color-interpolation-filters="sRGB"><feColorMatrix type="hueRotate" values="${TINTS[i % TINTS.length]}"/></filter>`).join('')}</defs>`
 

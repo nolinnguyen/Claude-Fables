@@ -6,7 +6,7 @@ import { DEFAULT_LOOK, findLook, LOOK_NAMES, LOOKS, lookFor } from './looks'
 import type { FablesEnsembleScene, FablesScene, FablesTowerRow } from '../types'
 
 import { summarizeTool } from './activity'
-import { buildEnsemblePrompt, ENSEMBLE_SYSTEM, ensembleFromReply, IDLE_MS, MAX_CAST } from './ensemble'
+import { buildEnsemblePrompt, ENSEMBLE_SYSTEM, ensembleFromReply, IDLE_MS, MAX_CAST, shortIds } from './ensemble'
 import { backoffMs } from './narrator'
 import { ensembleToSvg, H, MAX_SVG, resumeAt, sceneToSvg, speaksAfter, W } from './svg'
 import { type Beacon, claimLease, type Lease, rank, rowFor, STALE_MS, Tracker } from './tower'
@@ -293,8 +293,11 @@ async function narrateEnsemble($: EngineInterface, t: Tower, model: NarratorMode
   if (key === t.story.key) return
   t.story.isAsking = true
   try {
-    const reply = await $.model.complete({ model, system: ENSEMBLE_SYSTEM, prompt: buildEnsemblePrompt(agents, t.story.headlines), maxTokens: 2000, effort: 'low', timeoutMs: 30_000 })
-    const next = reply.isAnswered ? ensembleFromReply(reply.text, agents) : null
+    // The narrator sees short ids (a1, a2...), not the sessions' long ones; the scene comes back under the real ids.
+    const short = shortIds(agents)
+    const reply = await $.model.complete({ model, system: ENSEMBLE_SYSTEM, prompt: buildEnsemblePrompt(short.agents, t.story.headlines), maxTokens: 2000, effort: 'low', timeoutMs: 30_000 })
+    const written = reply.isAnswered ? ensembleFromReply(reply.text, short.agents) : null
+    const next = written ? short.restore(written) : null
     if (next) {
       t.story.key = key
       t.story.failures = 0

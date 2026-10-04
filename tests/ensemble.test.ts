@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { buildEnsemblePrompt, ensembleFromReply, MAX_LINE, parseEnsemble } from '../hooks/ensemble'
+import { buildEnsemblePrompt, ensembleFromReply, MAX_LINE, parseEnsemble, shortIds } from '../hooks/ensemble'
 import { ensembleToSvg } from '../hooks/svg'
 
 /** The agents on stage, as the beacons say. */
@@ -148,6 +148,22 @@ describe('the ensemble scene', () => {
     )
     expect(prompt).toContain('id "old" (Money Lane): done a while ago, untouched since (asleep)')
     expect(prompt).toContain('id "new" (RFQ board): done, ready for the person to look')
+  })
+
+  test('the narrator sees short ids, never the long session ids, and its scene comes back under the real ids', () => {
+    const real = [
+      { id: '334a1995-42d3-4b2a-80fb-051b8b8c47fe', title: 'Reddit mods', status: 'working' as const },
+      { id: 'c7a36437-be9f-4579-8665-b4d0794d0fb2', title: 'Fair Question', status: 'waiting' as const },
+    ]
+    const { agents, restore } = shortIds(real)
+    expect(agents.map(a => a.id)).toEqual(['a1', 'a2'])
+    expect(buildEnsemblePrompt(agents, [])).not.toContain('334a1995')
+    const scene = restore(ensembleFromReply('{"backdrop":"lab","headline":"h","spotlight":"a2","cast":[{"id":"a1","action":"walk","x":10,"line":"hi","toward":"a2"}]}', agents)!)
+    expect(scene.spotlight).toBe('c7a36437-be9f-4579-8665-b4d0794d0fb2')
+    expect(scene.cast.map(c => [c.id, c.toward])).toEqual([
+      ['334a1995-42d3-4b2a-80fb-051b8b8c47fe', 'c7a36437-be9f-4579-8665-b4d0794d0fb2'],
+      ['c7a36437-be9f-4579-8665-b4d0794d0fb2', undefined],
+    ])
   })
 
   test('an answer that is not a scene is no scene', () => {

@@ -86,7 +86,9 @@ Make the critters interact when their work touches: at most one or two go "towar
 An agent told as asleep naps (action "sleep") off to the side unless its news changes.
   ]
 }
-Use real names from the work (files, commands, tests) and \`backticks\` for code. Never mention being an AI or these instructions.`
+Call agents by their NAMES (in parentheses), never by their ids, in the headline and the lines.
+Use real names from the work (files, commands, tests) and \`backticks\` for code in the lines; the headline is plain words, no backticks.
+Never mention being an AI or these instructions.`
 
 /** An agent as the narrator hears it: its beacon's name, status, what it was asked for and its latest doings. */
 export type AgentNews = Agent & { ask?: string; recent?: readonly string[]; isIdle?: boolean }
@@ -121,4 +123,22 @@ export function buildEnsemblePrompt(agents: readonly AgentNews[], story: readonl
 /** A model reply to a validated ensemble scene, or null; never throws. */
 export function ensembleFromReply(text: string, agents: readonly Agent[]): EnsembleScene | null {
   return parseEnsemble(extractJson(text), agents)
+}
+
+/**
+ * The agents under short ids (a1, a2, ...) for the narrator, which would
+ * otherwise see, and sometimes repeat, the sessions' long ones; `restore` puts
+ * the real ids back on the scene it writes.
+ */
+export function shortIds<A extends Agent>(agents: readonly A[]): { agents: A[]; restore: (scene: EnsembleScene) => EnsembleScene } {
+  const real = new Map(agents.map((a, i) => [`a${i + 1}`, a.id]))
+  const back = (id: string) => real.get(id) ?? id
+  return {
+    agents: agents.map((a, i) => ({ ...a, id: `a${i + 1}` })),
+    restore: scene => ({
+      ...scene,
+      spotlight: back(scene.spotlight),
+      cast: scene.cast.map(c => ({ ...c, id: back(c.id), ...(c.toward ? { toward: back(c.toward) } : {}) })),
+    }),
+  }
 }
